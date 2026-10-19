@@ -3,9 +3,16 @@
 # Keeps the Mac awake, disables the screen saver and idle lock; "off" restores the previous settings.
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime
+SELF=${0:A}
 mkdir -p "$D" && chmod 700 "$D"
 
-cur() { defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo 900; }
+# Current screen saver idle time in seconds, or "unset" if the key was never written
+# (in which case macOS is using its built-in default).
+cur() {
+  local v
+  v=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null) && echo "$v" || echo unset
+}
+fmt() { [[ $1 == unset ]] && echo "system default" || echo "${1}s"; }
 
 # True only if the pid file holds a number AND that pid is really a caffeinate process
 # (guards against a stale or tampered pid file pointing at something else).
@@ -16,11 +23,17 @@ running() {
   [[ $(ps -p "$p" -o comm= 2>/dev/null) == *caffeinate ]]
 }
 
-# Put the saved screen saver time back (only if it is a plain number), then clear it.
+# Put the saved screen saver setting back, then clear it. A saved number is written back;
+# "unset" means there was no saved value, so the key is deleted to return to the system default.
 restore() {
   [[ -f $SAVED ]] || return 0
-  local v; v=$(<"$SAVED")
-  [[ $v == <-> ]] && defaults -currentHost write com.apple.screensaver idleTime -int "$v"
+  local v; v=$(cat "$SAVED" 2>/dev/null)
+  [[ -n $v ]] || return 0
+  if [[ $v == <-> ]]; then
+    defaults -currentHost write com.apple.screensaver idleTime -int "$v"
+  elif [[ $v == unset ]]; then
+    defaults -currentHost delete com.apple.screensaver idleTime 2>/dev/null
+  fi
   rm -f "$SAVED"
   killall cfprefsd 2>/dev/null
 }
@@ -41,30 +54,27 @@ case $1 in
     [[ -n $secs ]] && args+=(-t "$secs")
     # Values are passed as arguments, never spliced into the command string.
     nohup zsh -c '
-      pidf=$1; saved=$2; shift 2
+      pidf=$1; self=$2; shift 2
       caffeinate "$@" & echo $! > "$pidf"
       wait $!
       rm -f "$pidf"
-      if [[ -f $saved ]]; then
-        v=$(<"$saved")
-        [[ $v == <-> ]] && defaults -currentHost write com.apple.screensaver idleTime -int "$v"
-        rm -f "$saved"
-        killall cfprefsd 2>/dev/null
-      fi
-    ' _ "$PIDF" "$SAVED" "${args[@]}" >/dev/null 2>&1 &
+      "$self" _restore
+    ' _ "$PIDF" "$SELF" "${args[@]}" >/dev/null 2>&1 &
     echo "awake: ON (screen saver off, display/system kept awake)";;
   off)
     if running; then kill "$(<"$PIDF")" 2>/dev/null; sleep 0.5; fi
     restore
     rm -f "$PIDF"
-    echo "awake: OFF (settings restored, screen saver $(cur)s)";;
+    echo "awake: OFF (settings restored, screen saver $(fmt "$(cur)"))";;
+  _restore)   # internal: called by the background process when caffeinate exits
+    restore;;
   status|"")
     if running; then
-      echo "ON (saved screen saver time: $(<"$SAVED")s)"
+      echo "ON (saved screen saver time: $(fmt "$(<"$SAVED")"))"
     elif [[ -f $SAVED ]]; then
-      echo "OFF, but stale state found: run 'awake off' to restore screen saver to $(<"$SAVED")s"
+      echo "OFF, but stale state found: run 'awake off' to restore screen saver to $(fmt "$(<"$SAVED")")"
     else
-      echo "OFF (screen saver $(cur)s)"
+      echo "OFF (screen saver $(fmt "$(cur)"))"
     fi;;
   *) echo "usage: awake on [seconds] | off | status";;
 esac

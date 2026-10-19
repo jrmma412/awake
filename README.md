@@ -15,7 +15,17 @@ awake status         # show whether it is on
 - Runs `caffeinate -dimsu` (display, idle, disk, system on AC, user-active).
 - Sets the screen saver idle time to 0 and remembers the previous value.
 - `awake off` (or the timer expiring) restores the saved screen saver time.
+  If you had never set a custom value (macOS was using its built-in default),
+  the setting is deleted on restore rather than overwritten with a guess.
 - State lives in `~/.awake` (directory is user-only, mode 700).
+
+## Tested
+
+Verified on macOS (Apple Silicon): `caffeinate` assertions appear in
+`pmset -g assertions` while on, the screen saver idle time reads 0 while on,
+and the original value is restored when the timer expires or on `awake off`.
+Crash/reboot recovery, unset-key restore, and rejection of bad input were
+tested with stand-in `defaults`/`caffeinate` commands.
 
 ## Install
 
