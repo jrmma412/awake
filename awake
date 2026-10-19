@@ -5,7 +5,7 @@ zmodload zsh/datetime
 VERSION=1.2.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
-SELF=${0:A}
+SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
 mkdir -p "$D" && chmod 700 "$D"
 
 usage() {
@@ -25,10 +25,20 @@ EOT
 # Current screen saver idle time in seconds, or "unset" if the key was never written
 # (in which case macOS is using its built-in default).
 cur() {
-  local v
-  v=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null) && echo "$v" || echo unset
+  local out rc
+  out=$(defaults -currentHost read com.apple.screensaver idleTime 2>&1); rc=$?
+  if (( rc == 0 )) && [[ $out == <-> ]]; then echo "$out"
+  elif [[ $out == *"does not exist"* ]]; then echo unset
+  else echo unknown   # defaults failed for some other reason: never guess
+  fi
 }
-fmt() { [[ $1 == unset ]] && echo "system default" || echo "${1}s"; }
+fmt() {
+  case $1 in
+    unset) echo "system default";;
+    <->)   echo "${1}s";;
+    *)     echo "unknown";;
+  esac
+}
 
 # Turn a duration like 90, 45s, 30m, 2h, 1h30m into whole seconds. Fails on anything else.
 parse_dur() {
@@ -44,7 +54,7 @@ parse_dur() {
     done
   fi
   (( total > 0 && total <= 31536000 )) || return 1
-  echo $total
+  echo $(( total ))
 }
 
 human() {
@@ -83,22 +93,34 @@ restore() {
 turn_on() {
   local secs=$1
   if running; then echo "awake: already on"; return 0; fi
+  # Simple lock so two starts at once (e.g. menu bar click + Terminal) can't both run.
+  if ! mkdir "$D/lock" 2>/dev/null; then
+    if [[ -n $(find "$D/lock" -maxdepth 0 -mmin +1 2>/dev/null) ]]; then rmdir "$D/lock" 2>/dev/null; mkdir "$D/lock" 2>/dev/null || return 1
+    else echo "awake: another start is in progress, try again"; return 1; fi
+  fi
+  trap 'rmdir "$D/lock" 2>/dev/null' EXIT
   # Leftover state from a crash or reboot: restore the real original first, so we never
   # save our own "0" as the value to go back to.
   restore
   rm -f "$PIDF"
-  cur > "$SAVED"
+  local orig; orig=$(cur)
+  if [[ $orig == unknown ]]; then echo "awake: could not read the screen saver setting, not changing anything"; return 1; fi
+  echo "$orig" > "$SAVED"
   defaults -currentHost write com.apple.screensaver idleTime -int 0
   killall cfprefsd 2>/dev/null
-  local args=(-dimsu)   # d display, i idle, m disk, s system (AC), u declare user active
-  if [[ -n $secs ]]; then args+=(-t "$secs"); echo $(( EPOCHSECONDS + secs )) > "$UNTIL"; fi
+  # d display, i idle, m disk, s system (AC). -u (declare user active) is only added with a
+  # timer, because caffeinate gives -u its own short default timeout when no -t is set.
+  local args=(-dims)
+  if [[ -n $secs ]]; then args=(-dimsu -t "$secs"); echo $(( EPOCHSECONDS + secs )) > "$UNTIL"; fi
   # Values are passed as arguments, never spliced into the command string.
+  # The background process restores the screen saver only if the pid file is still its own
+  # (so `awake off` / a newer `awake` that already handled things is never undone).
   nohup zsh -c '
     pidf=$1; self=$2; shift 2
-    caffeinate "$@" & echo $! > "$pidf"
-    wait $!
-    rm -f "$pidf"
-    "$self" _restore
+    caffeinate "$@" & p=$!
+    echo $p > "$pidf"
+    wait $p
+    if [[ -f $pidf && $(<"$pidf") == $p ]]; then rm -f "$pidf"; "$self" _restore; fi
   ' _ "$PIDF" "$SELF" "${args[@]}" >/dev/null 2>&1 &
   # Wait (up to ~2s) for the background process to record its pid, so an immediate
   # `awake status` or `awake off` sees it.
@@ -108,7 +130,11 @@ turn_on() {
 }
 
 turn_off() {
-  if running; then kill "$(<"$PIDF")" 2>/dev/null; sleep 0.5; fi
+  if running; then
+    local p; p=$(<"$PIDF")
+    rm -f "$PIDF"          # remove first, so the background process knows we are handling the restore
+    kill "$p" 2>/dev/null; sleep 0.3
+  fi
   restore
   rm -f "$PIDF"
   echo "awake: OFF (settings restored, screen saver $(fmt "$(cur)"))"
@@ -121,9 +147,9 @@ show_status() {
       local u; u=$(<"$UNTIL")
       [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left"
     fi
-    echo "ON${left} (saved screen saver time: $(fmt "$(<"$SAVED")"))"
+    echo "ON${left} (saved screen saver time: $(fmt "$(cat "$SAVED" 2>/dev/null)"))"
   elif [[ -f $SAVED ]]; then
-    echo "OFF, but stale state found: run 'awake off' to restore screen saver to $(fmt "$(<"$SAVED")")"
+    echo "OFF, but stale state found: run 'awake off' to restore screen saver to $(fmt "$(cat "$SAVED" 2>/dev/null)")"
   else
     echo "OFF (screen saver $(fmt "$(cur)"))"
   fi
@@ -172,6 +198,7 @@ menubar() {
     fi
   fi
   bin=$(command -v awake) || bin=$SELF
+  [[ $bin =~ '^[A-Za-z0-9_./-]+$' ]] || { echo "awake: install path has unusual characters ($bin); not installing the menu bar icon"; return 1; }
   mkdir -p "$pd"
   menubar_plugin | sed "s|@AWAKE@|$bin|g" > "$p" && chmod +x "$p"
   echo "awake: menu bar icon installed ($p)"

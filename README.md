@@ -10,7 +10,11 @@ awake 2h         # on for 2 hours (also 30m, 1h30m, 90 = seconds)
 awake off        # off, screen saver setting restored
 awake toggle     # flip on/off
 awake status     # on or off, and time left
+awake help       # all commands
 ```
+
+(`awake on 2h` also works. If it's already on, a new time is ignored: run
+`awake off` first.)
 
 ## Install
 
@@ -18,7 +22,7 @@ awake status     # on or off, and time left
 
 ```
 brew tap jrmma412/awake https://github.com/jrmma412/awake
-brew install awake
+brew install jrmma412/awake/awake
 ```
 
 **Or one line, no Homebrew needed (public repo):**
@@ -27,7 +31,7 @@ brew install awake
 curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh
 ```
 
-**While the repo is private** (uses your GitHub CLI login):
+**While the repo is private** (uses your GitHub CLI login; delete this section when the repo goes public):
 
 ```
 d=$(mktemp -d) && gh repo clone jrmma412/awake "$d" -- --depth 1 && "$d/install.sh"
@@ -38,8 +42,11 @@ The installer puts it in `/opt/homebrew/bin` or `/usr/local/bin` when it can
 (already on your PATH); otherwise in `~/bin`, and adds that to your PATH.
 Find it any time with `command -v awake`.
 
+Pick one install method. If you switch to Homebrew, uninstall the other first.
+
 **Update:** `brew upgrade awake`, or run the install line again.
-**Uninstall:** `brew uninstall awake`, or `curl -fsSL .../install.sh | zsh -s -- --uninstall`.
+**Uninstall:** run `awake off` and `awake menubar off` first, then `brew uninstall awake`
+(or `curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh -s -- --uninstall`).
 
 ## Optional: menu bar icon
 
@@ -57,13 +64,13 @@ it). If SwiftBar asks for a plugin folder, pick the one `awake` prints
 
 ## What it does
 
-- Runs `caffeinate -dimsu` (display, idle, disk, system on AC, user-active).
+- Runs `caffeinate` with display, idle, disk and system (on AC) assertions; with a timer it also declares the user active (`-u`).
 - Sets the screen saver idle time to 0 and remembers the previous value.
 - `awake off` (or the timer ending) restores it. If you never had a custom
   value, the setting is deleted on restore rather than overwritten with a guess.
 - State lives in `~/.awake` (user-only, mode 700).
 
-Verified on macOS (Apple Silicon): `pmset -g assertions` shows the caffeinate
+Verified on macOS (Apple Silicon; Intel not tested): `pmset -g assertions` shows the caffeinate
 assertions while on, and the screen saver time is restored after the timer ends
 or on `awake off`.
 
@@ -79,9 +86,10 @@ or on `awake off`.
 - The pid file is only trusted if it holds a number and that process is really
   `caffeinate`.
 - It changes one user-level preference (`com.apple.screensaver idleTime`) and
-  restarts `cfprefsd` so it takes effect. No sudo, no network requests.
+  restarts `cfprefsd` so it takes effect. No sudo. The `awake` command itself makes
+  no network requests (`awake menubar` may run `brew install --cask swiftbar`).
   The installer only writes the `awake` file and, if needed, a PATH line (tagged
-  `# added by awake`) in `~/.zshrc`/`~/.zprofile`. `awake menubar` writes one
+  `# added by awake`) in `~/.zshrc`. `awake menubar` writes one
   plugin file.
 
 ## License
