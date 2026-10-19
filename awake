@@ -108,6 +108,8 @@ restore() {
 HAVE_LOCK=
 # (A trap set inside a function would fire when the function returns, so it is set once here.)
 trap '[[ -n $HAVE_LOCK ]] && rmdir "$D/lock" 2>/dev/null' EXIT
+# Ctrl-C / kill: exit normally so the EXIT trap above still releases the lock.
+trap 'exit 130' INT; trap 'exit 143' TERM HUP
 lock() {
   local i
   for i in {1..60}; do
@@ -287,7 +289,7 @@ uninstall() {
   fi
 
   # Restore the screen saver first; if that fails, stop and keep everything needed to retry.
-  turn_off >/dev/null || { echo "Stopped: could not restore your screen saver setting, nothing removed. Try again."; return 1; }
+  turn_off >/dev/null || { echo "Stopped: awake is busy or could not restore your screen saver setting. Nothing was removed; try again."; return 1; }
   rm -f "$sbdir/awake.5s.sh"
   local f t
   for f in ~/.zshrc ~/.zprofile; do
