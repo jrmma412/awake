@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.2.0
+VERSION=1.2.1
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
@@ -17,7 +17,7 @@ awake - keep your Mac awake with the screen on
   awake off          turn off and restore your screen saver setting
   awake toggle       switch on/off
   awake status       show whether it is on, and time left
-  awake menubar      (optional) add a menu bar icon;  "awake menubar off" removes it
+  awake menubar      (optional) menu bar icon, uses the SwiftBar app;  "awake menubar off" removes it
   awake help         this help
 EOT
 }

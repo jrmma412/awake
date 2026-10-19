@@ -49,6 +49,7 @@ Pick one install method. If you switch to Homebrew, uninstall the other first.
 
 **Update:** `brew upgrade awake`, or run the install line again.
 **Uninstall:** run `awake off` and `awake menubar off` first, then `brew uninstall awake`
+(and `brew uninstall --cask swiftbar` if you added it only for the icon)
 (or `curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh -s -- --uninstall`).
 
 ## Optional: menu bar icon
@@ -61,9 +62,18 @@ awake menubar          # add it
 awake menubar off      # remove it
 ```
 
-It uses [SwiftBar](https://swiftbar.app) (installed with Homebrew if you have
-it). If SwiftBar asks for a plugin folder, pick the one `awake` prints
-(`~/swiftbar-plugins`). The icon is experimental.
+**This uses a separate app, [SwiftBar](https://swiftbar.app)** (free, open
+source), to draw the icon. The `awake` command itself does not need it.
+
+- If SwiftBar isn't installed, `awake menubar` asks before installing it with
+  Homebrew (`brew install --cask swiftbar`, which also runs a normal Homebrew
+  update). Without Homebrew it tells you where to download SwiftBar.
+- The first time SwiftBar opens it asks for a plugin folder: pick the one
+  `awake` prints (`~/swiftbar-plugins`).
+- `awake menubar off` removes only the awake icon. SwiftBar stays installed;
+  remove it with `brew uninstall --cask swiftbar` if you don't use it for
+  anything else.
+- The icon is experimental.
 
 ## What it does
 

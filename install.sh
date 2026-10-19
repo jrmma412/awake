@@ -9,7 +9,7 @@
 # (to uninstall that way:  ... | zsh -s -- --uninstall)
 main() {
   local MARK="# added by awake" TAG="awake - keep your Mac awake"
-  local REF=v1.2.0   # release the downloaded copy is pinned to
+  local REF=v1.2.1   # release the downloaded copy is pinned to
   local RAW=https://raw.githubusercontent.com/jrmma412/awake/$REF/awake
   local d f yes=0 custom=""
   while [[ $# -gt 0 ]]; do
