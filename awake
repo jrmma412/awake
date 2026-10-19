@@ -25,10 +25,16 @@ EOT
 # Current screen saver idle time in seconds, or "unset" if the key was never written
 # (in which case macOS is using its built-in default).
 cur() {
-  local out rc
-  out=$(defaults -currentHost read com.apple.screensaver idleTime 2>&1); rc=$?
-  if (( rc == 0 )) && [[ $out == <-> ]]; then echo "$out"
-  elif [[ $out == *"does not exist"* ]]; then echo unset
+  local out rc i
+  # Right after `killall cfprefsd` the preferences daemon is restarting and a read can briefly
+  # report "does not exist" even though the value is set, so look again before calling it unset.
+  for i in 1 2 3; do
+    out=$(defaults -currentHost read com.apple.screensaver idleTime 2>&1); rc=$?
+    if (( rc == 0 )) && [[ $out == <-> ]]; then echo "$out"; return; fi
+    [[ $out == *"does not exist"* ]] || break
+    sleep 0.4
+  done
+  if [[ $out == *"does not exist"* ]]; then echo unset
   else echo unknown   # defaults failed for some other reason: never guess
   fi
 }
@@ -87,7 +93,7 @@ restore() {
     defaults -currentHost delete com.apple.screensaver idleTime 2>/dev/null
   fi
   rm -f "$SAVED"
-  killall cfprefsd 2>/dev/null
+  killall cfprefsd 2>/dev/null; sleep 0.5
 }
 
 turn_on() {
@@ -107,7 +113,7 @@ turn_on() {
   if [[ $orig == unknown ]]; then echo "awake: could not read the screen saver setting, not changing anything"; return 1; fi
   echo "$orig" > "$SAVED"
   defaults -currentHost write com.apple.screensaver idleTime -int 0
-  killall cfprefsd 2>/dev/null
+  killall cfprefsd 2>/dev/null; sleep 0.3
   # d display, i idle, m disk, s system (AC). -u (declare user active) is only added with a
   # timer, because caffeinate gives -u its own short default timeout when no -t is set.
   local args=(-dims)
