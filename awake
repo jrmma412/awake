@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.1.0
+VERSION=1.2.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 SELF=${0:A}
@@ -17,6 +17,7 @@ awake - keep your Mac awake with the screen on
   awake off          turn off and restore your screen saver setting
   awake toggle       switch on/off
   awake status       show whether it is on, and time left
+  awake menubar      (optional) add a menu bar icon;  "awake menubar off" removes it
   awake help         this help
 EOT
 }
@@ -128,6 +129,56 @@ show_status() {
   fi
 }
 
+# ---- optional menu bar icon (SwiftBar plugin), installed with: awake menubar ----
+menubar_plugin() {
+  cat <<'PLUGIN'
+#!/bin/zsh
+# <swiftbar.hideAbout>true</swiftbar.hideAbout>
+# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
+# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
+# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
+# <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
+# Menu bar toggle for the awake command-line tool. Refreshes every 5 seconds.
+A="@AWAKE@"
+st=$("$A" status 2>&1)
+if [[ $st == ON* ]]; then echo "☕"; else echo "💤"; fi
+echo "---"
+echo "$st"
+echo "---"
+if [[ $st == ON* ]]; then
+  echo "Turn off | shell=$A param1=off terminal=false refresh=true"
+else
+  [[ $st == *stale* ]] && echo "Restore screen saver setting | shell=$A param1=off terminal=false refresh=true"
+  echo "Keep awake (until I turn it off) | shell=$A param1=on terminal=false refresh=true"
+  echo "Keep awake for 30 minutes | shell=$A param1=on param2=30m terminal=false refresh=true"
+  echo "Keep awake for 1 hour | shell=$A param1=on param2=1h terminal=false refresh=true"
+  echo "Keep awake for 2 hours | shell=$A param1=on param2=2h terminal=false refresh=true"
+fi
+PLUGIN
+}
+
+menubar() {
+  local pd p bin
+  pd=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || pd=""
+  pd=${pd/#\~/$HOME}; [[ -n $pd ]] || pd=$HOME/swiftbar-plugins
+  p=$pd/awake.5s.sh
+  if [[ $1 == off ]]; then rm -f "$p" && echo "awake: menu bar icon removed"; return 0; fi
+  if [[ ! -d /Applications/SwiftBar.app && ! -d ~/Applications/SwiftBar.app ]]; then
+    if command -v brew >/dev/null; then
+      echo "awake: installing SwiftBar (the menu bar host app) with Homebrew..."
+      brew install --cask swiftbar || { echo "awake: SwiftBar install failed; get it from https://swiftbar.app and re-run 'awake menubar'"; return 1; }
+    else
+      echo "awake: SwiftBar is needed. Get it from https://swiftbar.app, then re-run 'awake menubar'"; return 1
+    fi
+  fi
+  bin=$(command -v awake) || bin=$SELF
+  mkdir -p "$pd"
+  menubar_plugin | sed "s|@AWAKE@|$bin|g" > "$p" && chmod +x "$p"
+  echo "awake: menu bar icon installed ($p)"
+  open -a SwiftBar 2>/dev/null
+  echo "If SwiftBar asks for a plugin folder, choose: $pd"
+}
+
 case $1 in
   on)
     if [[ -n $2 ]]; then
@@ -137,6 +188,7 @@ case $1 in
   off|stop)   turn_off;;
   toggle)     if running; then turn_off; else turn_on; fi;;
   status|st)  show_status;;
+  menubar)    menubar "${2:-}";;
   _restore)   restore;;   # internal: called by the background process when caffeinate exits
   help|-h|--help) usage;;
   -v|--version|version) echo "awake $VERSION";;

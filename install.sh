@@ -1,81 +1,45 @@
 #!/bin/zsh
 # Install / uninstall awake.
 #   ./install.sh              install the `awake` command
-#   ./install.sh --menubar    also add the optional SwiftBar menu bar icon
-#   ./install.sh --uninstall  remove everything this script installed
+#   ./install.sh --uninstall  remove it
+# Also works piped from the web (public repo):  curl -fsSL <raw install.sh url> | zsh
 set -u
-HERE=${0:A:h}
 MARK="# added by awake"
-TAG="awake - keep your Mac awake"   # used to make sure we only ever remove our own file
-
+TAG="awake - keep your Mac awake"
+RAW=https://raw.githubusercontent.com/jrmma412/awake/main/awake
 in_path() { [[ ":$PATH:" == *":$1:"* ]]; }
-find_installed() {
+
+if [[ ${1:-} == --uninstall ]]; then
   for d in /opt/homebrew/bin /usr/local/bin "$HOME/bin"; do
-    [[ -f $d/awake ]] && grep -q "$TAG" "$d/awake" 2>/dev/null && { echo "$d/awake"; return; }
+    [[ -f $d/awake ]] && grep -q "$TAG" "$d/awake" && { "$d/awake" off >/dev/null 2>&1; "$d/awake" menubar off >/dev/null 2>&1; rm -f "$d/awake"; echo "removed $d/awake"; }
   done
-}
+  for f in ~/.zshrc ~/.zprofile; do
+    [[ -f $f ]] && grep -q "$MARK" "$f" && { grep -v "$MARK" "$f" > "$f.tmp"; mv "$f.tmp" "$f"; echo "cleaned PATH line in $f"; }
+  done
+  rm -rf "$HOME/.awake"; echo "awake uninstalled."; exit 0
+fi
+[[ -z ${1:-} ]] || { echo "usage: ./install.sh [--uninstall]"; exit 1; }
 
-plugin_dir() {
-  local d
-  d=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) && [[ -n $d ]] && { echo "${d/#\~/$HOME}"; return; }
-  echo "$HOME/swiftbar-plugins"
-}
+# Use the awake file next to this script if there is one, otherwise download it.
+src=${0:A:h}/awake
+if [[ ! -f $src ]]; then
+  src=$(mktemp) && curl -fsSL "$RAW" -o "$src" || { echo "download failed"; exit 1; }
+fi
+grep -q "$TAG" "$src" || { echo "unexpected file, aborting"; exit 1; }
 
-case ${1:-} in
-  --uninstall)
-    bin=$(find_installed)
-    [[ -n $bin ]] && "$bin" off >/dev/null 2>&1
-    for d in /opt/homebrew/bin /usr/local/bin "$HOME/bin"; do
-      [[ -f $d/awake ]] && grep -q "$TAG" "$d/awake" && rm -f "$d/awake" && echo "removed $d/awake"
-    done
-    p="$(plugin_dir)/awake.5s.sh"
-    [[ -e $p ]] && rm -f "$p" && echo "removed $p"
-    for f in ~/.zshrc ~/.zprofile; do
-      [[ -f $f ]] && grep -q "$MARK" "$f" && { grep -v "$MARK" "$f" > "$f.tmp"; mv "$f.tmp" "$f"; echo "cleaned PATH line in $f"; }
-    done
-    rm -rf "$HOME/.awake"
-    echo "awake uninstalled. (SwiftBar itself, if you installed it, is left alone: brew uninstall --cask swiftbar)"
-    exit 0;;
-  --menubar|"") ;;
-  *) echo "usage: ./install.sh [--menubar | --uninstall]"; exit 1;;
-esac
-
-# ---- install the command ----
 dest=""
 for d in /opt/homebrew/bin /usr/local/bin; do
-  if [[ -d $d && -w $d ]] && in_path "$d"; then dest=$d; break; fi
+  [[ -d $d && -w $d ]] && in_path "$d" && { dest=$d; break; }
 done
 if [[ -z $dest ]]; then
-  dest=$HOME/bin
-  mkdir -p "$dest"
-  line="export PATH=\"\$HOME/bin:\$PATH\" $MARK"
+  dest=$HOME/bin; mkdir -p "$dest"
   for f in ~/.zshrc ~/.zprofile; do
-    grep -q "$MARK" "$f" 2>/dev/null || echo "$line" >> "$f"
+    grep -q "$MARK" "$f" 2>/dev/null || echo "export PATH=\"\$HOME/bin:\$PATH\" $MARK" >> "$f"
   done
-  NEEDS_RELOAD=1
+  reload=1
 fi
-install -m 755 "$HERE/awake" "$dest/awake" || { echo "could not write $dest/awake"; exit 1; }
+install -m 755 "$src" "$dest/awake" || { echo "could not write $dest/awake"; exit 1; }
 echo "installed: $dest/awake"
-
-# ---- optional menu bar icon ----
-if [[ ${1:-} == --menubar ]]; then
-  if [[ ! -d /Applications/SwiftBar.app && ! -d ~/Applications/SwiftBar.app ]]; then
-    if command -v brew >/dev/null; then
-      echo "installing SwiftBar (menu bar host app) with Homebrew..."
-      brew install --cask swiftbar || { echo "SwiftBar install failed; install it from https://swiftbar.app and re-run"; exit 1; }
-    else
-      echo "SwiftBar is not installed. Get it from https://swiftbar.app, then re-run: ./install.sh --menubar"; exit 1
-    fi
-  fi
-  pd=$(plugin_dir); mkdir -p "$pd"
-  sed "s|@AWAKE@|$dest/awake|g" "$HERE/menubar/awake.5s.sh" > "$pd/awake.5s.sh"
-  chmod +x "$pd/awake.5s.sh"
-  echo "installed menu bar plugin: $pd/awake.5s.sh"
-  open -a SwiftBar 2>/dev/null
-  echo "If SwiftBar asks for a plugin folder, choose: $pd"
-fi
-
-echo
-echo "Done. Try:  awake 1h"
-[[ ${NEEDS_RELOAD:-0} == 1 ]] && echo "(Open a new Terminal tab first, or run: source ~/.zshrc)"
+echo "Done. Try:  awake 1h     (optional menu bar icon: awake menubar)"
+[[ ${reload:-0} == 1 ]] && echo "Open a new Terminal tab first (or run: source ~/.zshrc)."
 exit 0

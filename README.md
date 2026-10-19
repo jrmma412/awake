@@ -14,39 +14,45 @@ awake status     # on or off, and time left
 
 ## Install
 
-Paste this into Terminal (it uses the GitHub CLI, so it also works while the
-repo is private):
+**Homebrew (easiest, public repo):**
+
+```
+brew tap jrmma412/awake https://github.com/jrmma412/awake
+brew install awake
+```
+
+**Or one line, no Homebrew needed (public repo):**
+
+```
+curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh
+```
+
+**While the repo is private** (uses your GitHub CLI login):
 
 ```
 d=$(mktemp -d) && gh repo clone jrmma412/awake "$d" -- --depth 1 && "$d/install.sh"
 ```
 
-Once the repo is public, no GitHub login is needed:
+Then open a new Terminal tab. `awake` works from any folder, like `caffeinate`.
+The installer puts it in `/opt/homebrew/bin` or `/usr/local/bin` when it can
+(already on your PATH); otherwise in `~/bin`, and adds that to your PATH.
+Find it any time with `command -v awake`.
 
-```
-d=$(mktemp -d) && git clone --depth 1 https://github.com/jrmma412/awake "$d" && "$d/install.sh"
-```
-
-Open a new Terminal tab and type `awake`. That's it. The installer puts `awake`
-in `/opt/homebrew/bin` or `/usr/local/bin` when it can write there (so it's
-already on your PATH, like `caffeinate`); otherwise it uses `~/bin` and adds
-that to your PATH for you.
-
-**Update:** run the install command again.
-**Uninstall:** `$d/install.sh --uninstall` from a fresh clone, or just delete the
-`awake` file and the `~/.awake` folder.
+**Update:** `brew upgrade awake`, or run the install line again.
+**Uninstall:** `brew uninstall awake`, or `curl -fsSL .../install.sh | zsh -s -- --uninstall`.
 
 ## Optional: menu bar icon
 
-Not installed by default. To add a ☕ / 💤 icon in the menu bar with
-one-click on/off and 30m / 1h / 2h timers, run the installer with `--menubar`:
+Not installed by default. One extra command adds a ☕ / 💤 icon in the menu bar
+with one-click on/off and 30m / 1h / 2h timers:
 
 ```
-d=$(mktemp -d) && gh repo clone jrmma412/awake "$d" -- --depth 1 && "$d/install.sh" --menubar
+awake menubar          # add it
+awake menubar off      # remove it
 ```
 
-This uses [SwiftBar](https://swiftbar.app) (installed with Homebrew if you have
-it). If SwiftBar asks for a plugin folder, pick the one the installer prints
+It uses [SwiftBar](https://swiftbar.app) (installed with Homebrew if you have
+it). If SwiftBar asks for a plugin folder, pick the one `awake` prints
 (`~/swiftbar-plugins`). The icon is experimental.
 
 ## What it does
@@ -74,8 +80,9 @@ or on `awake off`.
   `caffeinate`.
 - It changes one user-level preference (`com.apple.screensaver idleTime`) and
   restarts `cfprefsd` so it takes effect. No sudo, no network requests.
-  The installer only writes the `awake` file, an optional PATH line (tagged
-  `# added by awake`) in `~/.zshrc`/`~/.zprofile`, and the optional plugin.
+  The installer only writes the `awake` file and, if needed, a PATH line (tagged
+  `# added by awake`) in `~/.zshrc`/`~/.zprofile`. `awake menubar` writes one
+  plugin file.
 
 ## License
 
