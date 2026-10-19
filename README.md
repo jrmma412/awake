@@ -1,73 +1,81 @@
 # awake
 
-A tiny zsh command for macOS that keeps the Mac awake with the screen on.
-
-## Usage
+Keep your Mac awake with the screen on, straight from Terminal. Like
+`caffeinate`, but it also turns off the screen saver while it's running and puts
+your setting back when it stops.
 
 ```
-awake on [seconds]   # keep display/system awake; optional timer in whole seconds
-awake off            # stop and restore the previous screen saver setting
-awake status         # show whether it is on
+awake            # on until you turn it off
+awake 2h         # on for 2 hours (also 30m, 1h30m, 90 = seconds)
+awake off        # off, screen saver setting restored
+awake toggle     # flip on/off
+awake status     # on or off, and time left
 ```
+
+## Install
+
+Paste this into Terminal (it uses the GitHub CLI, so it also works while the
+repo is private):
+
+```
+d=$(mktemp -d) && gh repo clone jrmma412/awake "$d" -- --depth 1 && "$d/install.sh"
+```
+
+Once the repo is public, no GitHub login is needed:
+
+```
+d=$(mktemp -d) && git clone --depth 1 https://github.com/jrmma412/awake "$d" && "$d/install.sh"
+```
+
+Open a new Terminal tab and type `awake`. That's it. The installer puts `awake`
+in `/opt/homebrew/bin` or `/usr/local/bin` when it can write there (so it's
+already on your PATH, like `caffeinate`); otherwise it uses `~/bin` and adds
+that to your PATH for you.
+
+**Update:** run the install command again.
+**Uninstall:** `$d/install.sh --uninstall` from a fresh clone, or just delete the
+`awake` file and the `~/.awake` folder.
+
+## Optional: menu bar icon
+
+Not installed by default. To add a ☕ / 💤 icon in the menu bar with
+one-click on/off and 30m / 1h / 2h timers, run the installer with `--menubar`:
+
+```
+d=$(mktemp -d) && gh repo clone jrmma412/awake "$d" -- --depth 1 && "$d/install.sh" --menubar
+```
+
+This uses [SwiftBar](https://swiftbar.app) (installed with Homebrew if you have
+it). If SwiftBar asks for a plugin folder, pick the one the installer prints
+(`~/swiftbar-plugins`). The icon is experimental.
 
 ## What it does
 
 - Runs `caffeinate -dimsu` (display, idle, disk, system on AC, user-active).
 - Sets the screen saver idle time to 0 and remembers the previous value.
-- `awake off` (or the timer expiring) restores the saved screen saver time.
-  If you had never set a custom value (macOS was using its built-in default),
-  the setting is deleted on restore rather than overwritten with a guess.
-- State lives in `~/.awake` (directory is user-only, mode 700).
+- `awake off` (or the timer ending) restores it. If you never had a custom
+  value, the setting is deleted on restore rather than overwritten with a guess.
+- State lives in `~/.awake` (user-only, mode 700).
 
-## Tested
-
-Verified on macOS (Apple Silicon): `caffeinate` assertions appear in
-`pmset -g assertions` while on, the screen saver idle time reads 0 while on,
-and the original value is restored when the timer expires or on `awake off`.
-Crash/reboot recovery, unset-key restore, and rejection of bad input were
-tested with stand-in `defaults`/`caffeinate` commands.
-
-## Install
-
-```
-mkdir -p ~/bin && cp awake ~/bin/awake && chmod +x ~/bin/awake
-grep -q 'HOME/bin' ~/.zshrc 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
-```
-
-## Optional: menu bar icon (SwiftBar)
-
-An optional [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin adds a
-menu bar toggle: ☕ when awake is on, 💤 when it is off, with a dropdown for
-on, 30 minutes, 1 hour, 2 hours, and off. It just calls the `awake` command,
-so install that first (the plugin expects it at `~/bin/awake`).
-
-```
-brew install --cask swiftbar
-mkdir -p ~/swiftbar-plugins
-ln -sf "$PWD/menubar/awake.5s.sh" ~/swiftbar-plugins/awake.5s.sh
-```
-
-Open SwiftBar and choose `~/swiftbar-plugins` as the plugin folder. The icon
-appears within a few seconds and refreshes every 5 seconds.
-
-Status: experimental. The command-line tool is the tested part.
+Verified on macOS (Apple Silicon): `pmset -g assertions` shows the caffeinate
+assertions while on, and the screen saver time is restored after the timer ends
+or on `awake off`.
 
 ## Security notes
 
-- While `awake` is on, the screen saver (and any "require password after
-  screen saver" lock that depends on it) will not start. Turn it off when you
-  walk away from the machine.
+- While `awake` is on, the screen saver (and any "require password after screen
+  saver" lock that depends on it) won't start. Turn it off when you walk away.
 - If the Mac reboots or the process is killed while on, `awake status` reports
-  the leftover state, and `awake off` (or the next `awake on`) restores the
+  the leftover state, and `awake off` (or the next `awake`) restores the
   original screen saver time instead of overwriting it.
-- The timer argument must be a whole number, and values are passed to the
-  background process as arguments rather than interpolated into a command
-  string, so untrusted input cannot inject commands.
-- The pid file is only trusted if it holds a number and that process is
-  really `caffeinate`.
-- The script changes a user-level preference (`com.apple.screensaver idleTime`)
-  and restarts `cfprefsd` so the change takes effect. It does not need sudo and
-  makes no network requests.
+- Times are strictly validated and passed to the background process as
+  arguments, never spliced into a command string, so input can't inject commands.
+- The pid file is only trusted if it holds a number and that process is really
+  `caffeinate`.
+- It changes one user-level preference (`com.apple.screensaver idleTime`) and
+  restarts `cfprefsd` so it takes effect. No sudo, no network requests.
+  The installer only writes the `awake` file, an optional PATH line (tagged
+  `# added by awake`) in `~/.zshrc`/`~/.zprofile`, and the optional plugin.
 
 ## License
 

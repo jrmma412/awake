@@ -1,10 +1,25 @@
 #!/bin/zsh
-# awake on [seconds] | off | status
-# Keeps the Mac awake, disables the screen saver and idle lock; "off" restores the previous settings.
+# awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
+# Run `awake help` for usage.
+zmodload zsh/datetime
+VERSION=1.1.0
 D=$HOME/.awake
-PIDF=$D/pid; SAVED=$D/idleTime
+PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 SELF=${0:A}
 mkdir -p "$D" && chmod 700 "$D"
+
+usage() {
+  cat <<'EOT'
+awake - keep your Mac awake with the screen on
+
+  awake              turn on until you turn it off
+  awake 2h           turn on for a while (30m, 2h, 1h30m, 90, 45s)
+  awake off          turn off and restore your screen saver setting
+  awake toggle       switch on/off
+  awake status       show whether it is on, and time left
+  awake help         this help
+EOT
+}
 
 # Current screen saver idle time in seconds, or "unset" if the key was never written
 # (in which case macOS is using its built-in default).
@@ -13,6 +28,31 @@ cur() {
   v=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null) && echo "$v" || echo unset
 }
 fmt() { [[ $1 == unset ]] && echo "system default" || echo "${1}s"; }
+
+# Turn a duration like 90, 45s, 30m, 2h, 1h30m into whole seconds. Fails on anything else.
+parse_dur() {
+  local rest=$1 total=0
+  [[ -n $rest ]] || return 1
+  if [[ $rest == <-> ]]; then total=$rest; rest=
+  else
+    while [[ -n $rest ]]; do
+      [[ $rest =~ '^([0-9]+)([hms])(.*)$' ]] || return 1
+      local n=$match[1] u=$match[2]; rest=$match[3]
+      (( ${#n} <= 6 )) || return 1
+      case $u in h) (( total += n*3600 ));; m) (( total += n*60 ));; s) (( total += n ));; esac
+    done
+  fi
+  (( total > 0 && total <= 31536000 )) || return 1
+  echo $total
+}
+
+human() {
+  local s=$1 h m
+  h=$(( s/3600 )); m=$(( (s%3600)/60 ))
+  if (( h > 0 )); then echo "${h}h ${m}m"
+  elif (( m > 0 )); then echo "${m}m $(( s%60 ))s"
+  else echo "${s}s"; fi
+}
 
 # True only if the pid file holds a number AND that pid is really a caffeinate process
 # (guards against a stale or tampered pid file pointing at something else).
@@ -26,6 +66,7 @@ running() {
 # Put the saved screen saver setting back, then clear it. A saved number is written back;
 # "unset" means there was no saved value, so the key is deleted to return to the system default.
 restore() {
+  rm -f "$UNTIL"
   [[ -f $SAVED ]] || return 0
   local v; v=$(cat "$SAVED" 2>/dev/null)
   [[ -n $v ]] || return 0
@@ -38,43 +79,69 @@ restore() {
   killall cfprefsd 2>/dev/null
 }
 
+turn_on() {
+  local secs=$1
+  if running; then echo "awake: already on"; return 0; fi
+  # Leftover state from a crash or reboot: restore the real original first, so we never
+  # save our own "0" as the value to go back to.
+  restore
+  rm -f "$PIDF"
+  cur > "$SAVED"
+  defaults -currentHost write com.apple.screensaver idleTime -int 0
+  killall cfprefsd 2>/dev/null
+  local args=(-dimsu)   # d display, i idle, m disk, s system (AC), u declare user active
+  if [[ -n $secs ]]; then args+=(-t "$secs"); echo $(( EPOCHSECONDS + secs )) > "$UNTIL"; fi
+  # Values are passed as arguments, never spliced into the command string.
+  nohup zsh -c '
+    pidf=$1; self=$2; shift 2
+    caffeinate "$@" & echo $! > "$pidf"
+    wait $!
+    rm -f "$pidf"
+    "$self" _restore
+  ' _ "$PIDF" "$SELF" "${args[@]}" >/dev/null 2>&1 &
+  # Wait (up to ~2s) for the background process to record its pid, so an immediate
+  # `awake status` or `awake off` sees it.
+  local i; for i in {1..20}; do [[ -s $PIDF ]] && break; sleep 0.1; done
+  if [[ -n $secs ]]; then echo "awake: ON for $(human $secs) (screen saver off, display/system kept awake)"
+  else echo "awake: ON until you run 'awake off' (screen saver off, display/system kept awake)"; fi
+}
+
+turn_off() {
+  if running; then kill "$(<"$PIDF")" 2>/dev/null; sleep 0.5; fi
+  restore
+  rm -f "$PIDF"
+  echo "awake: OFF (settings restored, screen saver $(fmt "$(cur)"))"
+}
+
+show_status() {
+  if running; then
+    local left=""
+    if [[ -f $UNTIL ]]; then
+      local u; u=$(<"$UNTIL")
+      [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left"
+    fi
+    echo "ON${left} (saved screen saver time: $(fmt "$(<"$SAVED")"))"
+  elif [[ -f $SAVED ]]; then
+    echo "OFF, but stale state found: run 'awake off' to restore screen saver to $(fmt "$(<"$SAVED")")"
+  else
+    echo "OFF (screen saver $(fmt "$(cur)"))"
+  fi
+}
+
 case $1 in
   on)
-    if running; then echo "already on"; exit 0; fi
-    secs=$2
-    if [[ -n $secs && $secs != <-> ]]; then echo "usage: awake on [seconds]  (seconds must be a whole number)"; exit 1; fi
-    # Leftover state from a crash or reboot: restore the real original first, so we never
-    # save our own "0" as the value to go back to.
-    restore
-    rm -f "$PIDF"
-    cur > "$SAVED"
-    defaults -currentHost write com.apple.screensaver idleTime -int 0
-    killall cfprefsd 2>/dev/null
-    args=(-dimsu)   # d display, i idle, m disk, s system (AC), u declare user active
-    [[ -n $secs ]] && args+=(-t "$secs")
-    # Values are passed as arguments, never spliced into the command string.
-    nohup zsh -c '
-      pidf=$1; self=$2; shift 2
-      caffeinate "$@" & echo $! > "$pidf"
-      wait $!
-      rm -f "$pidf"
-      "$self" _restore
-    ' _ "$PIDF" "$SELF" "${args[@]}" >/dev/null 2>&1 &
-    echo "awake: ON (screen saver off, display/system kept awake)";;
-  off)
-    if running; then kill "$(<"$PIDF")" 2>/dev/null; sleep 0.5; fi
-    restore
-    rm -f "$PIDF"
-    echo "awake: OFF (settings restored, screen saver $(fmt "$(cur)"))";;
-  _restore)   # internal: called by the background process when caffeinate exits
-    restore;;
-  status|"")
-    if running; then
-      echo "ON (saved screen saver time: $(fmt "$(<"$SAVED")"))"
-    elif [[ -f $SAVED ]]; then
-      echo "OFF, but stale state found: run 'awake off' to restore screen saver to $(fmt "$(<"$SAVED")")"
-    else
-      echo "OFF (screen saver $(fmt "$(cur)"))"
-    fi;;
-  *) echo "usage: awake on [seconds] | off | status";;
+    if [[ -n $2 ]]; then
+      s=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; exit 1; }
+    fi
+    turn_on "$s";;
+  off|stop)   turn_off;;
+  toggle)     if running; then turn_off; else turn_on; fi;;
+  status|st)  show_status;;
+  _restore)   restore;;   # internal: called by the background process when caffeinate exits
+  help|-h|--help) usage;;
+  -v|--version|version) echo "awake $VERSION";;
+  "")         turn_on;;
+  *)
+    if s=$(parse_dur "$1"); then turn_on "$s"
+    else echo "awake: unknown command or time '$1'"; echo; usage; exit 1; fi;;
 esac
