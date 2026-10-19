@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.2.2
+VERSION=1.2.3
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
@@ -18,6 +18,7 @@ awake - keep your Mac awake with the screen on
   awake toggle       switch on/off
   awake status       show whether it is on, and time left
   awake menubar      (optional) menu bar icon, uses the SwiftBar app;  "awake menubar off" removes it
+  awake uninstall    remove awake  (--all also removes SwiftBar; -y skips the question)
   awake help         this help
 EOT
 }
@@ -222,6 +223,66 @@ menubar() {
   echo "awake: menu bar icon installed ($p)"
 }
 
+# ---- uninstall: awake uninstall [--all] [-y] ----
+uninstall() {
+  local all=0 yes=0 a
+  for a in "$@"; do
+    case $a in --all) all=1;; -y|--yes) yes=1;; *) echo "usage: awake uninstall [--all] [-y]"; return 1;; esac
+  done
+  local MARK="# added by awake" self=$SELF brewed=0
+  [[ $self == */Cellar/awake/* || -L $self ]] && brewed=1
+  local sbdir; sbdir=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || sbdir=$HOME/swiftbar-plugins
+  sbdir=${sbdir/#\~/$HOME}
+
+  echo "This will:"
+  echo "  - turn awake off and restore your screen saver setting"
+  echo "  - remove the awake menu bar icon (if added)"
+  if (( brewed )); then echo "  - run: brew uninstall awake"; else echo "  - delete $self"; fi
+  echo "  - remove any PATH line awake added to ~/.zshrc / ~/.zprofile"
+  echo "  - delete ~/.awake (awake's state folder)"
+  if (( all )); then
+    echo "  - quit and uninstall SwiftBar and its settings"
+    echo "  - delete $sbdir if nothing else is left in it"
+  fi
+  if (( ! yes )); then
+    [[ -t 0 ]] || { echo "Not running in a terminal: re-run with -y to confirm."; return 1; }
+    local ans; read -r "ans?Continue? [y/N] "
+    [[ $ans == [Yy]* ]] || { echo "Cancelled. Nothing was changed."; return 0; }
+  fi
+
+  turn_off >/dev/null
+  rm -f "$sbdir/awake.5s.sh"
+  local f t
+  for f in ~/.zshrc ~/.zprofile; do
+    if [[ -f $f ]] && grep -q "$MARK" "$f"; then
+      t=$(mktemp) && grep -v "$MARK" "$f" > "$t"; cat "$t" > "$f"; rm -f "$t"   # in place: keeps symlinks
+      echo "removed PATH line from $f"
+    fi
+  done
+  rm -rf "$D"
+
+  if (( all )); then
+    osascript -e 'quit app "SwiftBar"' 2>/dev/null; sleep 1
+    if command -v brew >/dev/null && brew list --cask swiftbar >/dev/null 2>&1; then
+      brew uninstall --cask --zap swiftbar >/dev/null 2>&1 && echo "uninstalled SwiftBar"
+    elif [[ -d /Applications/SwiftBar.app ]]; then
+      rm -rf /Applications/SwiftBar.app && echo "removed /Applications/SwiftBar.app"
+    fi
+    defaults delete com.ameba.SwiftBar 2>/dev/null
+    rmdir "$sbdir" 2>/dev/null && echo "removed $sbdir"
+    [[ -d $sbdir ]] && echo "kept $sbdir (it has other plugins in it)"
+  fi
+
+  if (( brewed )); then
+    brew uninstall awake >/dev/null 2>&1 && echo "uninstalled awake (Homebrew)"
+    brew untap jrmma412/awake >/dev/null 2>&1
+  else
+    rm -f "$self" && echo "removed $self"
+    [[ ${self:h} == $HOME/bin ]] && rmdir "$HOME/bin" 2>/dev/null   # only if now empty
+  fi
+  echo "awake is uninstalled. Open a new Terminal tab to finish."
+}
+
 case $1 in
   on)
     if [[ -n $2 ]]; then
@@ -232,6 +293,7 @@ case $1 in
   toggle)     if running; then turn_off; else turn_on; fi;;
   status|st)  show_status;;
   menubar)    menubar "${2:-}";;
+  uninstall)  shift; uninstall "$@";;
   _restore)   restore;;   # internal: called by the background process when caffeinate exits
   help|-h|--help) usage;;
   -v|--version|version) echo "awake $VERSION";;

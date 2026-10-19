@@ -9,7 +9,7 @@
 # (to uninstall that way:  ... | zsh -s -- --uninstall)
 main() {
   local MARK="# added by awake" TAG="awake - keep your Mac awake"
-  local REF=v1.2.2   # release the downloaded copy is pinned to
+  local REF=v1.2.3   # release the downloaded copy is pinned to
   local RAW=https://raw.githubusercontent.com/jrmma412/awake/$REF/awake
   local d f yes=0 custom=""
   while [[ $# -gt 0 ]]; do
@@ -29,6 +29,10 @@ main() {
   }
 
   if [[ ${1:-} == --uninstall ]]; then
+    # Prefer the installed awake's own uninstaller (it also handles --all).
+    shift
+    local b; b=$(command -v awake 2>/dev/null)
+    if [[ -n $b ]] && grep -q "uninstall()" "${b:A}" 2>/dev/null; then "$b" uninstall "$@"; return; fi
     local found=0
     for d in /opt/homebrew/bin /usr/local/bin "$HOME/bin"; do
       if [[ -L $d/awake ]]; then

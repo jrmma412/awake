@@ -48,9 +48,15 @@ Find it any time with `command -v awake`.
 Pick one install method. If you switch to Homebrew, uninstall the other first.
 
 **Update:** `brew upgrade awake`, or run the install line again.
-**Uninstall:** run `awake off` and `awake menubar off` first, then `brew uninstall awake`
-(and `brew uninstall --cask swiftbar` if you added it only for the icon)
-(or `curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh -s -- --uninstall`).
+**Uninstall:**
+
+```
+awake uninstall          # remove awake, its PATH line and its settings
+awake uninstall --all    # same, plus the menu bar icon's SwiftBar app and its settings
+```
+
+It shows what it will remove and asks first (`-y` skips the question). Your
+screen saver setting is restored before anything is deleted.
 
 ## Optional: menu bar icon
 
