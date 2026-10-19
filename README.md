@@ -37,6 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zs
 d=$(mktemp -d) && gh repo clone jrmma412/awake "$d" -- --depth 1 && "$d/install.sh"
 ```
 
+The installer tells you where it will put `awake` and asks before doing anything
+(add `-y` to skip the question, or `--dir ~/somewhere` to choose the folder).
+
 Then open a new Terminal tab. `awake` works from any folder, like `caffeinate`.
 The installer puts it in `/opt/homebrew/bin` or `/usr/local/bin` when it can
 (already on your PATH); otherwise in `~/bin`, and adds that to your PATH.

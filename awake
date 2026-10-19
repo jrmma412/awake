@@ -191,6 +191,10 @@ menubar() {
   if [[ $1 == off ]]; then rm -f "$p" && echo "awake: menu bar icon removed"; return 0; fi
   if [[ ! -d /Applications/SwiftBar.app && ! -d ~/Applications/SwiftBar.app ]]; then
     if command -v brew >/dev/null; then
+      if [[ -t 0 && -z ${AWAKE_YES:-} ]]; then
+        local ans; read -r "ans?awake: the menu bar icon needs SwiftBar (a free menu bar app). Install it with Homebrew now? (This also runs a normal Homebrew update.) [Y/n] "
+        [[ -z $ans || $ans == [Yy]* ]] || { echo "awake: cancelled, nothing installed"; return 0; }
+      fi
       echo "awake: installing SwiftBar (the menu bar host app) with Homebrew..."
       brew install --cask swiftbar || { echo "awake: SwiftBar install failed; get it from https://swiftbar.app and re-run 'awake menubar'"; return 1; }
     else
