@@ -4,12 +4,13 @@
 #   ./install.sh --uninstall  remove it
 #   options: -y / --yes  don't ask, use the default location
 #            --dir DIR   install into DIR instead of the automatic choice
+#   piped:   curl ... | zsh -s -- -y      (options go after "zsh -s --")
 # Also works piped from the web (public repo):
 #   curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh
-# (to uninstall that way:  ... | zsh -s -- --uninstall)
+# (to uninstall that way:  ... | zsh -s -- --uninstall [--all] [-y])
 main() {
   local MARK="# added by awake" TAG="awake - keep your Mac awake"
-  local REF=v1.2.3   # release the downloaded copy is pinned to
+  local REF=v1.2.4   # release the downloaded copy is pinned to
   local RAW=https://raw.githubusercontent.com/jrmma412/awake/$REF/awake
   local d f yes=0 custom=""
   while [[ $# -gt 0 ]]; do
@@ -32,7 +33,10 @@ main() {
     # Prefer the installed awake's own uninstaller (it also handles --all).
     shift
     local b; b=$(command -v awake 2>/dev/null)
-    if [[ -n $b ]] && grep -q "uninstall()" "${b:A}" 2>/dev/null; then "$b" uninstall "$@"; return; fi
+    if [[ -n $b ]] && grep -q "uninstall()" "${b:A}" 2>/dev/null; then
+      if (( yes )); then "$b" uninstall -y "$@"; else "$b" uninstall "$@"; fi
+      return
+    fi
     local found=0
     for d in /opt/homebrew/bin /usr/local/bin "$HOME/bin"; do
       if [[ -L $d/awake ]]; then
@@ -44,8 +48,11 @@ main() {
     done
     for f in ~/.zshrc ~/.zprofile; do
       if [[ -f $f ]] && grep -q "$MARK" "$f"; then
-        local t; t=$(mktemp) && grep -v "$MARK" "$f" > "$t"; cat "$t" > "$f"; rm -f "$t"   # in place: keeps symlinks/permissions
-        echo "cleaned PATH line in $f"
+        local t; t=$(mktemp) || { echo "could not edit $f; remove the line ending in '$MARK' yourself"; continue; }
+        grep -v "$MARK" "$f" > "$t"
+        if (( $? <= 1 )); then cat "$t" > "$f" && echo "cleaned PATH line in $f"   # in place: keeps symlinks/permissions
+        else echo "could not edit $f; remove the line ending in '$MARK' yourself"; fi
+        rm -f "$t"
       fi
     done
     if (( found )) || [[ ! -s $HOME/.awake/idleTime ]]; then rm -rf "$HOME/.awake"
@@ -67,7 +74,8 @@ main() {
   # Prefer a folder already on PATH that we can write to (no PATH edit needed).
   local dest=""
   if [[ -n $custom ]]; then
-    dest=${custom/#\~/$HOME}; mkdir -p "$dest" || { echo "cannot create $dest"; return 1; }
+    dest=${custom/#\~/$HOME}; dest=${dest:a}
+    [[ $dest != *[\'\"\$\`\\]* && $dest != *$'\n'* ]] || { echo "--dir: please use a folder path without quotes, \$, backticks or backslashes"; return 1; }
   fi
   for d in /opt/homebrew/bin /usr/local/bin; do
     [[ -z $dest ]] || break
@@ -83,9 +91,19 @@ main() {
   if (( addpath )); then echo "That folder is not on your PATH yet, so one line will be added to ~/.zshrc."
   else echo "That folder is already on your PATH, so no other changes are needed."; fi
   ask "Continue?" || { echo "Cancelled. Nothing was changed. (Use --dir DIR to pick another folder.)"; [[ -n $tmp ]] && rm -f "$tmp"; return 0; }
-  mkdir -p "$dest"
+  mkdir -p "$dest" || { echo "cannot create $dest"; [[ -n $tmp ]] && rm -f "$tmp"; return 1; }
   if (( addpath )); then
-    grep -q "$MARK" ~/.zshrc 2>/dev/null || echo "export PATH=\"$dest:\$PATH\" $MARK" >> ~/.zshrc
+    local line="export PATH=\"$dest:\$PATH\" $MARK"
+    if ! grep -qxF "$line" ~/.zshrc 2>/dev/null; then
+      # replace an older awake PATH line (e.g. a different --dir) instead of stacking them
+      if grep -q "$MARK" ~/.zshrc 2>/dev/null; then
+        local t2; t2=$(mktemp) || { echo "could not edit ~/.zshrc"; return 1; }
+        grep -v "$MARK" ~/.zshrc > "$t2"; (( $? <= 1 )) && cat "$t2" > ~/.zshrc; rm -f "$t2"
+      fi
+      # make sure our line starts on its own line, even if .zshrc doesn't end with a newline
+      [[ -s ~/.zshrc && $(tail -c1 ~/.zshrc) != "" ]] && echo >> ~/.zshrc
+      echo "$line" >> ~/.zshrc
+    fi
     reload=1
   fi
   install -m 755 "$src" "$dest/awake" || { echo "could not write $dest/awake"; [[ -n $tmp ]] && rm -f "$tmp"; return 1; }

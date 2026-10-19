@@ -31,8 +31,9 @@ brew install jrmma412/awake/awake
 curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh
 ```
 
-The installer tells you where it will put `awake` and asks before doing anything
-(add `-y` to skip the question, or `--dir ~/somewhere` to choose the folder).
+The installer tells you where it will put `awake` and asks before doing anything.
+To skip the question or pick the folder, add options after `zsh -s --`, e.g.
+`curl -fsSL …/install.sh | zsh -s -- -y` or `… | zsh -s -- --dir ~/somewhere`.
 
 Then open a new Terminal tab. `awake` works from any folder, like `caffeinate`.
 The installer puts it in `/opt/homebrew/bin` or `/usr/local/bin` when it can
@@ -40,6 +41,8 @@ The installer puts it in `/opt/homebrew/bin` or `/usr/local/bin` when it can
 Find it any time with `command -v awake`.
 
 Pick one install method. If you switch to Homebrew, uninstall the other first.
+If you remove it with plain `brew uninstall awake`, run `awake off` first so your
+screen saver setting is restored (`awake uninstall` does this for you).
 
 **Update:** `brew upgrade awake`, or run the install line again.
 **Uninstall:**
@@ -67,10 +70,13 @@ source), to draw the icon. The `awake` command itself does not need it.
 
 - If SwiftBar isn't installed, `awake menubar` asks before installing it with
   Homebrew (`brew install --cask swiftbar`, which also runs a normal Homebrew
-  update). Without Homebrew it tells you where to download SwiftBar.
+  update). Without Homebrew it tells you where to download SwiftBar. In a
+  script (no terminal to ask), set `AWAKE_YES=1` to allow the install.
 - If SwiftBar has no plugin folder yet, `awake` sets it to `~/swiftbar-plugins`
   for you, so there's nothing to choose. If you already use SwiftBar, your
   existing plugin folder is kept and the icon is added there.
+- `awake uninstall --all` removes SwiftBar too, unless you have other SwiftBar
+  plugins, in which case SwiftBar is left alone.
 - `awake menubar off` removes only the awake icon. SwiftBar stays installed;
   remove it with `brew uninstall --cask swiftbar` if you don't use it for
   anything else.
@@ -102,8 +108,13 @@ or on `awake off`.
   restarts `cfprefsd` so it takes effect. No sudo. The `awake` command itself makes
   no network requests (`awake menubar` may run `brew install --cask swiftbar`).
   The installer only writes the `awake` file and, if needed, a PATH line (tagged
-  `# added by awake`) in `~/.zshrc`. `awake menubar` writes one
-  plugin file.
+  `# added by awake`) in `~/.zshrc`. `awake menubar` writes one plugin file
+  and, only if SwiftBar has no plugin folder yet, sets SwiftBar's
+  `PluginDirectory` preference.
+- If macOS refuses to restore the screen saver setting, `awake` keeps the saved
+  value and tells you, so `awake off` can try again; it never throws it away.
+- On a Mac where an administrator manages the screen saver (e.g. a work
+  profile), `awake` warns that the screen saver may still start.
 
 ## License
 

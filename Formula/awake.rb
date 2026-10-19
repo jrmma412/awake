@@ -19,6 +19,7 @@ class Awake < Formula
       Optional menu bar icon:  awake menubar
       (uses the separate SwiftBar app; awake asks before installing it)
       To remove everything later:  awake uninstall --all
+      (or run `awake off` before `brew uninstall awake`)
     EOS
   end
 

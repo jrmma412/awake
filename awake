@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.2.3
+VERSION=1.2.4
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
@@ -51,7 +51,7 @@ fmt() {
 parse_dur() {
   local rest=$1 total=0
   [[ -n $rest ]] || return 1
-  if [[ $rest == <-> ]]; then total=$rest; rest=
+  if [[ $rest == <-> ]]; then (( ${#rest} <= 8 )) || return 1; total=$rest; rest=
   else
     while [[ -n $rest ]]; do
       [[ $rest =~ '^([0-9]+)([hms])(.*)$' ]] || return 1
@@ -83,38 +83,59 @@ running() {
 
 # Put the saved screen saver setting back, then clear it. A saved number is written back;
 # "unset" means there was no saved value, so the key is deleted to return to the system default.
+# The saved value is only deleted once it has really been put back; if macOS refuses the write,
+# it is kept so `awake off` can try again (your screen saver/lock is never silently lost).
 restore() {
   rm -f "$UNTIL"
   [[ -f $SAVED ]] || return 0
   local v; v=$(cat "$SAVED" 2>/dev/null)
-  [[ -n $v ]] || return 0
+  [[ -n $v ]] || { rm -f "$SAVED"; return 0; }
   if [[ $v == <-> ]]; then
-    defaults -currentHost write com.apple.screensaver idleTime -int "$v"
+    defaults -currentHost write com.apple.screensaver idleTime -int "$v" || {
+      echo "awake: could not restore your screen saver time (${v}s). It is still saved; run 'awake off' again." >&2; return 1; }
   elif [[ $v == unset ]]; then
-    defaults -currentHost delete com.apple.screensaver idleTime 2>/dev/null
+    if ! defaults -currentHost delete com.apple.screensaver idleTime 2>/dev/null; then
+      [[ $(cur) == unset ]] || {
+        echo "awake: could not restore your screen saver to the system default. Run 'awake off' again." >&2; return 1; }
+    fi
   fi
   rm -f "$SAVED"
   killall cfprefsd 2>/dev/null; sleep 0.5
 }
 
+# One awake command at a time changes settings (Terminal, menu bar and the timer can overlap).
+# Waits up to ~6s; a lock left by a crashed command is taken over after a minute.
+HAVE_LOCK=
+# (A trap set inside a function would fire when the function returns, so it is set once here.)
+trap '[[ -n $HAVE_LOCK ]] && rmdir "$D/lock" 2>/dev/null' EXIT
+lock() {
+  local i
+  for i in {1..60}; do
+    if mkdir "$D/lock" 2>/dev/null; then HAVE_LOCK=1; return 0; fi
+    [[ -n $(find "$D/lock" -maxdepth 0 -mmin +1 2>/dev/null) ]] && rmdir "$D/lock" 2>/dev/null
+    sleep 0.1
+  done
+  echo "awake: busy (another awake command is running), try again"; return 1
+}
+unlock() { [[ -n $HAVE_LOCK ]] && rmdir "$D/lock" 2>/dev/null; HAVE_LOCK=; }
+
 turn_on() {
   local secs=$1
-  if running; then echo "awake: already on"; return 0; fi
-  # Simple lock so two starts at once (e.g. menu bar click + Terminal) can't both run.
-  if ! mkdir "$D/lock" 2>/dev/null; then
-    if [[ -n $(find "$D/lock" -maxdepth 0 -mmin +1 2>/dev/null) ]]; then rmdir "$D/lock" 2>/dev/null; mkdir "$D/lock" 2>/dev/null || return 1
-    else echo "awake: another start is in progress, try again"; return 1; fi
-  fi
-  trap 'rmdir "$D/lock" 2>/dev/null' EXIT
+  lock || return 1
+  if running; then echo "awake: already on"; unlock; return 0; fi
   # Leftover state from a crash or reboot: restore the real original first, so we never
   # save our own "0" as the value to go back to.
-  restore
+  restore || { unlock; return 1; }
   rm -f "$PIDF"
   local orig; orig=$(cur)
-  if [[ $orig == unknown ]]; then echo "awake: could not read the screen saver setting, not changing anything"; return 1; fi
+  if [[ $orig == unknown ]]; then echo "awake: could not read the screen saver setting, not changing anything"; unlock; return 1; fi
   echo "$orig" > "$SAVED"
-  defaults -currentHost write com.apple.screensaver idleTime -int 0
+  if ! defaults -currentHost write com.apple.screensaver idleTime -int 0; then
+    rm -f "$SAVED"; echo "awake: could not change the screen saver setting, not turning on"; unlock; return 1
+  fi
   killall cfprefsd 2>/dev/null; sleep 0.3
+  # A managed Mac (e.g. a work profile) can force the screen saver time; say so instead of pretending.
+  [[ $(cur) == 0 ]] || echo "awake: note: this Mac seems to manage the screen saver setting, so the screen saver may still start"
   # d display, i idle, m disk, s system (AC). -u (declare user active) is only added with a
   # timer, because caffeinate gives -u its own short default timeout when no -t is set.
   local args=(-dims)
@@ -132,18 +153,21 @@ turn_on() {
   # Wait (up to ~2s) for the background process to record its pid, so an immediate
   # `awake status` or `awake off` sees it.
   local i; for i in {1..20}; do [[ -s $PIDF ]] && break; sleep 0.1; done
+  unlock
   if [[ -n $secs ]]; then echo "awake: ON for $(human $secs) (screen saver off, display/system kept awake)"
   else echo "awake: ON until you run 'awake off' (screen saver off, display/system kept awake)"; fi
 }
 
 turn_off() {
+  lock || return 1
   if running; then
     local p; p=$(<"$PIDF")
     rm -f "$PIDF"          # remove first, so the background process knows we are handling the restore
     kill "$p" 2>/dev/null; sleep 0.3
   fi
-  restore
   rm -f "$PIDF"
+  if ! restore; then unlock; return 1; fi
+  unlock
   echo "awake: OFF (settings restored, screen saver $(fmt "$(cur)"))"
 }
 
@@ -197,10 +221,14 @@ menubar() {
   # No plugin folder chosen yet: use ~/swiftbar-plugins and tell SwiftBar, so it doesn't ask.
   [[ -n $pd ]] || { pd=$HOME/swiftbar-plugins; setdir=1; }
   p=$pd/awake.5s.sh
-  if [[ $1 == off ]]; then rm -f "$p" && echo "awake: menu bar icon removed"; return 0; fi
+  if [[ $1 == off ]]; then
+    if [[ -e $p ]]; then rm -f "$p" && echo "awake: menu bar icon removed"; else echo "awake: no menu bar icon to remove"; fi
+    return 0
+  fi
   if [[ ! -d /Applications/SwiftBar.app && ! -d ~/Applications/SwiftBar.app ]]; then
     if command -v brew >/dev/null; then
-      if [[ -t 0 && -z ${AWAKE_YES:-} ]]; then
+      if [[ -z ${AWAKE_YES:-} ]]; then
+        [[ -t 0 ]] || { echo "awake: SwiftBar needs installing; run 'awake menubar' in Terminal, or set AWAKE_YES=1"; return 1; }
         local ans; read -r "ans?awake: the menu bar icon needs SwiftBar (a free menu bar app). Install it with Homebrew now? (This also runs a normal Homebrew update.) [Y/n] "
         [[ -z $ans || $ans == [Yy]* ]] || { echo "awake: cancelled, nothing installed"; return 0; }
       fi
@@ -211,6 +239,7 @@ menubar() {
     fi
   fi
   bin=$(command -v awake) || bin=$SELF
+  bin=${bin:a}
   [[ $bin =~ '^[A-Za-z0-9_./-]+$' ]] || { echo "awake: install path has unusual characters ($bin); not installing the menu bar icon"; return 1; }
   mkdir -p "$pd"
   menubar_plugin | sed "s|@AWAKE@|$bin|g" > "$p" && chmod +x "$p"
@@ -230,9 +259,12 @@ uninstall() {
     case $a in --all) all=1;; -y|--yes) yes=1;; *) echo "usage: awake uninstall [--all] [-y]"; return 1;; esac
   done
   local MARK="# added by awake" self=$SELF brewed=0
-  [[ $self == */Cellar/awake/* || -L $self ]] && brewed=1
+  [[ ${self:A} == */Cellar/awake/* ]] && brewed=1
   local sbdir; sbdir=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || sbdir=$HOME/swiftbar-plugins
   sbdir=${sbdir/#\~/$HOME}
+  # Other SwiftBar plugins (besides awake's)? Then --all leaves SwiftBar alone.
+  local others=0
+  [[ -d $sbdir ]] && [[ -n $(find "$sbdir" -mindepth 1 -maxdepth 1 ! -name awake.5s.sh ! -name .DS_Store 2>/dev/null) ]] && others=1
 
   echo "This will:"
   echo "  - turn awake off and restore your screen saver setting"
@@ -240,41 +272,54 @@ uninstall() {
   if (( brewed )); then echo "  - run: brew uninstall awake"; else echo "  - delete $self"; fi
   echo "  - remove any PATH line awake added to ~/.zshrc / ~/.zprofile"
   echo "  - delete ~/.awake (awake's state folder)"
-  if (( all )); then
+  if (( all && others )); then
+    echo "  - keep SwiftBar: you have other plugins in $sbdir"
+  elif (( all )); then
     echo "  - quit and uninstall SwiftBar and its settings"
-    echo "  - delete $sbdir if nothing else is left in it"
+    echo "  - delete $sbdir"
   fi
   if (( ! yes )); then
-    [[ -t 0 ]] || { echo "Not running in a terminal: re-run with -y to confirm."; return 1; }
-    local ans; read -r "ans?Continue? [y/N] "
+    local ans
+    if [[ -t 0 ]]; then read -r "ans?Continue? [y/N] "
+    elif { : </dev/tty; } 2>/dev/null; then read -r "ans?Continue? [y/N] " </dev/tty
+    else echo "Not running in a terminal: re-run with -y to confirm."; return 1; fi
     [[ $ans == [Yy]* ]] || { echo "Cancelled. Nothing was changed."; return 0; }
   fi
 
-  turn_off >/dev/null
+  # Restore the screen saver first; if that fails, stop and keep everything needed to retry.
+  turn_off >/dev/null || { echo "Stopped: could not restore your screen saver setting, nothing removed. Try again."; return 1; }
   rm -f "$sbdir/awake.5s.sh"
   local f t
   for f in ~/.zshrc ~/.zprofile; do
     if [[ -f $f ]] && grep -q "$MARK" "$f"; then
-      t=$(mktemp) && grep -v "$MARK" "$f" > "$t"; cat "$t" > "$f"; rm -f "$t"   # in place: keeps symlinks
-      echo "removed PATH line from $f"
+      t=$(mktemp) || { echo "could not edit $f; remove the line ending in '$MARK' yourself"; continue; }
+      grep -v "$MARK" "$f" > "$t"
+      if (( $? <= 1 )); then cat "$t" > "$f" && echo "removed PATH line from $f"   # in place: keeps symlinks
+      else echo "could not edit $f; remove the line ending in '$MARK' yourself"; fi
+      rm -f "$t"
     fi
   done
   rm -rf "$D"
 
-  if (( all )); then
+  if (( all && others )); then
+    echo "kept SwiftBar (you have other plugins in $sbdir)"
+  elif (( all )); then
     osascript -e 'quit app "SwiftBar"' 2>/dev/null; sleep 1
     if command -v brew >/dev/null && brew list --cask swiftbar >/dev/null 2>&1; then
       brew uninstall --cask --zap swiftbar >/dev/null 2>&1 && echo "uninstalled SwiftBar"
-    elif [[ -d /Applications/SwiftBar.app ]]; then
-      rm -rf /Applications/SwiftBar.app && echo "removed /Applications/SwiftBar.app"
     fi
+    local app
+    for app in /Applications/SwiftBar.app ~/Applications/SwiftBar.app; do
+      [[ -d $app ]] && rm -rf "$app" && echo "removed $app"
+    done
     defaults delete com.ameba.SwiftBar 2>/dev/null
-    rmdir "$sbdir" 2>/dev/null && echo "removed $sbdir"
-    [[ -d $sbdir ]] && echo "kept $sbdir (it has other plugins in it)"
+    rm -f "$sbdir/.DS_Store"
+    [[ -d $sbdir ]] && rmdir "$sbdir" 2>/dev/null && echo "removed $sbdir"
   fi
 
   if (( brewed )); then
-    brew uninstall awake >/dev/null 2>&1 && echo "uninstalled awake (Homebrew)"
+    if brew uninstall awake >/dev/null 2>&1; then echo "uninstalled awake (Homebrew)"
+    else echo "brew uninstall awake failed; run it yourself to finish"; fi
     brew untap jrmma412/awake >/dev/null 2>&1
   else
     rm -f "$self" && echo "removed $self"
@@ -294,7 +339,7 @@ case $1 in
   status|st)  show_status;;
   menubar)    menubar "${2:-}";;
   uninstall)  shift; uninstall "$@";;
-  _restore)   restore;;   # internal: called by the background process when caffeinate exits
+  _restore)   lock && { restore; unlock; };;   # internal: called by the background process when caffeinate exits
   help|-h|--help) usage;;
   -v|--version|version) echo "awake $VERSION";;
   "")         turn_on;;
