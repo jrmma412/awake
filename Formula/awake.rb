@@ -2,8 +2,8 @@ class Awake < Formula
   desc "Keep your Mac awake with the screen on, like caffeinate"
   homepage "https://github.com/jrmma412/awake"
   url "https://github.com/jrmma412/awake.git",
-      tag:      "v1.2.3",
-      revision: "238da9d9f4c02c8a2578548a9145d729dc00470d"
+      tag:      "v1.2.4",
+      revision: "d1e600cfed1c6dc42d5f1c5dd2642dbd86745a0d"
   license "MIT"
   head "https://github.com/jrmma412/awake.git", branch: "main"
 
