@@ -18,23 +18,17 @@ awake help       # all commands
 
 ## Install
 
-**Homebrew (easiest, public repo):**
+**Homebrew (easiest):**
 
 ```
 brew tap jrmma412/awake https://github.com/jrmma412/awake
 brew install jrmma412/awake/awake
 ```
 
-**Or one line, no Homebrew needed (public repo):**
+**Or one line, no Homebrew needed:**
 
 ```
 curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/install.sh | zsh
-```
-
-**While the repo is private** (uses your GitHub CLI login; delete this section when the repo goes public):
-
-```
-d=$(mktemp -d) && gh repo clone jrmma412/awake "$d" -- --depth 1 && "$d/install.sh"
 ```
 
 The installer tells you where it will put `awake` and asks before doing anything
@@ -80,7 +74,6 @@ source), to draw the icon. The `awake` command itself does not need it.
 - `awake menubar off` removes only the awake icon. SwiftBar stays installed;
   remove it with `brew uninstall --cask swiftbar` if you don't use it for
   anything else.
-- The icon is experimental.
 
 ## What it does
 
