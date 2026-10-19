@@ -1,0 +1,70 @@
+#!/bin/zsh
+# awake on [seconds] | off | status
+# Keeps the Mac awake, disables the screen saver and idle lock; "off" restores the previous settings.
+D=$HOME/.awake
+PIDF=$D/pid; SAVED=$D/idleTime
+mkdir -p "$D" && chmod 700 "$D"
+
+cur() { defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo 900; }
+
+# True only if the pid file holds a number AND that pid is really a caffeinate process
+# (guards against a stale or tampered pid file pointing at something else).
+running() {
+  [[ -f $PIDF ]] || return 1
+  local p; p=$(<"$PIDF")
+  [[ $p == <-> ]] || return 1
+  [[ $(ps -p "$p" -o comm= 2>/dev/null) == *caffeinate ]]
+}
+
+# Put the saved screen saver time back (only if it is a plain number), then clear it.
+restore() {
+  [[ -f $SAVED ]] || return 0
+  local v; v=$(<"$SAVED")
+  [[ $v == <-> ]] && defaults -currentHost write com.apple.screensaver idleTime -int "$v"
+  rm -f "$SAVED"
+  killall cfprefsd 2>/dev/null
+}
+
+case $1 in
+  on)
+    if running; then echo "already on"; exit 0; fi
+    secs=$2
+    if [[ -n $secs && $secs != <-> ]]; then echo "usage: awake on [seconds]  (seconds must be a whole number)"; exit 1; fi
+    # Leftover state from a crash or reboot: restore the real original first, so we never
+    # save our own "0" as the value to go back to.
+    restore
+    rm -f "$PIDF"
+    cur > "$SAVED"
+    defaults -currentHost write com.apple.screensaver idleTime -int 0
+    killall cfprefsd 2>/dev/null
+    args=(-dimsu)   # d display, i idle, m disk, s system (AC), u declare user active
+    [[ -n $secs ]] && args+=(-t "$secs")
+    # Values are passed as arguments, never spliced into the command string.
+    nohup zsh -c '
+      pidf=$1; saved=$2; shift 2
+      caffeinate "$@" & echo $! > "$pidf"
+      wait $!
+      rm -f "$pidf"
+      if [[ -f $saved ]]; then
+        v=$(<"$saved")
+        [[ $v == <-> ]] && defaults -currentHost write com.apple.screensaver idleTime -int "$v"
+        rm -f "$saved"
+        killall cfprefsd 2>/dev/null
+      fi
+    ' _ "$PIDF" "$SAVED" "${args[@]}" >/dev/null 2>&1 &
+    echo "awake: ON (screen saver off, display/system kept awake)";;
+  off)
+    if running; then kill "$(<"$PIDF")" 2>/dev/null; sleep 0.5; fi
+    restore
+    rm -f "$PIDF"
+    echo "awake: OFF (settings restored, screen saver $(cur)s)";;
+  status|"")
+    if running; then
+      echo "ON (saved screen saver time: $(<"$SAVED")s)"
+    elif [[ -f $SAVED ]]; then
+      echo "OFF, but stale state found: run 'awake off' to restore screen saver to $(<"$SAVED")s"
+    else
+      echo "OFF (screen saver $(cur)s)"
+    fi;;
+  *) echo "usage: awake on [seconds] | off | status";;
+esac
