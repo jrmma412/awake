@@ -2,8 +2,8 @@ class Awake < Formula
   desc "Keep your Mac awake with the screen on, like caffeinate"
   homepage "https://github.com/jrmma412/awake"
   url "https://github.com/jrmma412/awake.git",
-      tag:      "v1.2.2",
-      revision: "ed592020bed501e1d6cffba6fed1194021be795e"
+      tag:      "v1.2.3",
+      revision: "238da9d9f4c02c8a2578548a9145d729dc00470d"
   license "MIT"
   head "https://github.com/jrmma412/awake.git", branch: "main"
 
@@ -18,7 +18,7 @@ class Awake < Formula
       Try:  awake 1h
       Optional menu bar icon:  awake menubar
       (uses the separate SwiftBar app; awake asks before installing it)
-      Before uninstalling, run:  awake off && awake menubar off
+      To remove everything later:  awake uninstall --all
     EOS
   end
 
