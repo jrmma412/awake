@@ -68,8 +68,9 @@ source), to draw the icon. The `awake` command itself does not need it.
 - If SwiftBar isn't installed, `awake menubar` asks before installing it with
   Homebrew (`brew install --cask swiftbar`, which also runs a normal Homebrew
   update). Without Homebrew it tells you where to download SwiftBar.
-- The first time SwiftBar opens it asks for a plugin folder: pick the one
-  `awake` prints (`~/swiftbar-plugins`).
+- If SwiftBar has no plugin folder yet, `awake` sets it to `~/swiftbar-plugins`
+  for you, so there's nothing to choose. If you already use SwiftBar, your
+  existing plugin folder is kept and the icon is added there.
 - `awake menubar off` removes only the awake icon. SwiftBar stays installed;
   remove it with `brew uninstall --cask swiftbar` if you don't use it for
   anything else.

@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.2.1
+VERSION=1.2.2
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
@@ -190,9 +190,11 @@ PLUGIN
 }
 
 menubar() {
-  local pd p bin
+  local pd p bin setdir=0
   pd=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || pd=""
-  pd=${pd/#\~/$HOME}; [[ -n $pd ]] || pd=$HOME/swiftbar-plugins
+  pd=${pd/#\~/$HOME}
+  # No plugin folder chosen yet: use ~/swiftbar-plugins and tell SwiftBar, so it doesn't ask.
+  [[ -n $pd ]] || { pd=$HOME/swiftbar-plugins; setdir=1; }
   p=$pd/awake.5s.sh
   if [[ $1 == off ]]; then rm -f "$p" && echo "awake: menu bar icon removed"; return 0; fi
   if [[ ! -d /Applications/SwiftBar.app && ! -d ~/Applications/SwiftBar.app ]]; then
@@ -211,9 +213,13 @@ menubar() {
   [[ $bin =~ '^[A-Za-z0-9_./-]+$' ]] || { echo "awake: install path has unusual characters ($bin); not installing the menu bar icon"; return 1; }
   mkdir -p "$pd"
   menubar_plugin | sed "s|@AWAKE@|$bin|g" > "$p" && chmod +x "$p"
-  echo "awake: menu bar icon installed ($p)"
+  if (( setdir )); then
+    defaults write com.ameba.SwiftBar PluginDirectory "$pd"
+    # A running SwiftBar only reads the folder at launch, so restart it.
+    pgrep -xq SwiftBar && { osascript -e 'quit app "SwiftBar"' 2>/dev/null; sleep 1; }
+  fi
   open -a SwiftBar 2>/dev/null
-  echo "If SwiftBar asks for a plugin folder, choose: $pd"
+  echo "awake: menu bar icon installed ($p)"
 }
 
 case $1 in
