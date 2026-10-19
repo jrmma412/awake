@@ -34,6 +34,24 @@ mkdir -p ~/bin && cp awake ~/bin/awake && chmod +x ~/bin/awake
 grep -q 'HOME/bin' ~/.zshrc 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
 ```
 
+## Optional: menu bar icon (SwiftBar)
+
+An optional [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin adds a
+menu bar toggle: ☕ when awake is on, 💤 when it is off, with a dropdown for
+on, 30 minutes, 1 hour, 2 hours, and off. It just calls the `awake` command,
+so install that first (the plugin expects it at `~/bin/awake`).
+
+```
+brew install --cask swiftbar
+mkdir -p ~/swiftbar-plugins
+ln -sf "$PWD/menubar/awake.5s.sh" ~/swiftbar-plugins/awake.5s.sh
+```
+
+Open SwiftBar and choose `~/swiftbar-plugins` as the plugin folder. The icon
+appears within a few seconds and refreshes every 5 seconds.
+
+Status: experimental. The command-line tool is the tested part.
+
 ## Security notes
 
 - While `awake` is on, the screen saver (and any "require password after
