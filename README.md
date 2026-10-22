@@ -81,6 +81,27 @@ source), to draw the icon. The `awake` command itself does not need it.
   remove it with `brew uninstall --cask swiftbar` if you don't use it for
   anything else.
 
+## Optional: always-on agent mode
+
+For a Mac that runs background services, bots or AI agents 24/7. Not installed by default:
+
+```
+awake agent            # add it (starts now and at every login)
+awake agent status     # is it running?
+awake agent off        # remove it
+```
+
+- Keeps the **system** awake (idle, disk and system-on-AC sleep prevented) so
+  network services keep running, and comes back after restarts (a LaunchAgent,
+  `~/Library/LaunchAgents/com.jrmma412.awake.agent.plist`, running
+  `/usr/bin/caffeinate -ims`).
+- Unlike `awake on`, it does **not** keep the display on and does **not** touch the
+  screen saver, so the screen still turns off and locks normally. Safer for a Mac
+  that is always on.
+- Independent of `awake on/off`: you can still use those as usual. `awake status`
+  shows agent mode too, and `awake uninstall` removes it.
+- On a MacBook, system sleep is only prevented while plugged in (macOS rule for `-s`).
+
 ## What it does
 
 - Runs `caffeinate` with display, idle, disk and system (on AC) assertions; with a timer it also declares the user active (`-u`).

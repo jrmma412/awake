@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.2.4
+VERSION=1.3.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
@@ -18,6 +18,9 @@ awake - keep your Mac awake with the screen on
   awake toggle       switch on/off
   awake status       show whether it is on, and time left
   awake menubar      (optional) menu bar icon, uses the SwiftBar app;  "awake menubar off" removes it
+  awake agent        (optional) always-on mode for servers/agents: system stays awake 24/7, also after
+                     restarts, but the display sleeps and the screen locks normally.
+                     "awake agent off" removes it, "awake agent status" shows it
   awake uninstall    remove awake  (--all also removes SwiftBar; -y skips the question)
   awake help         this help
 EOT
@@ -174,6 +177,7 @@ turn_off() {
 }
 
 show_status() {
+  [[ -f $AGENT_PLIST ]] && agent_status
   if running; then
     local left=""
     if [[ -f $UNTIL ]]; then
@@ -254,6 +258,61 @@ menubar() {
   echo "awake: menu bar icon installed ($p)"
 }
 
+# ---- optional always-on "agent mode" (LaunchAgent), installed with: awake agent ----
+# Keeps the SYSTEM awake (idle, disk, system-on-AC assertions) so background services, bots and
+# AI agents keep running, and starts again automatically at login. Unlike `awake on`, it does NOT
+# keep the display on and does NOT touch the screen saver, so the screen still turns off and locks.
+AGENT_LABEL=com.jrmma412.awake.agent
+AGENT_PLIST=$HOME/Library/LaunchAgents/$AGENT_LABEL.plist
+agent_loaded() { launchctl print "gui/$UID/$AGENT_LABEL" >/dev/null 2>&1; }
+agent_status() {
+  if [[ ! -f $AGENT_PLIST ]]; then echo "agent mode: not installed (add it with 'awake agent')"; return 0; fi
+  if agent_loaded && pgrep -qf "caffeinate -ims"; then
+    echo "agent mode: ON (system kept awake 24/7 and after restarts; display sleeps and the screen locks normally)"
+  else
+    echo "agent mode: installed but not running; run 'awake agent' again to restart it"
+  fi
+}
+agent() {
+  case ${1:-on} in
+    status) agent_status; return 0;;
+    off)
+      if [[ -f $AGENT_PLIST ]]; then
+        launchctl bootout "gui/$UID/$AGENT_LABEL" 2>/dev/null
+        rm -f "$AGENT_PLIST" && echo "awake: agent mode removed (normal sleep settings apply again)"
+      else
+        echo "awake: agent mode is not installed"
+      fi
+      return 0;;
+    on) ;;
+    *) echo "usage: awake agent [on|off|status]"; return 1;;
+  esac
+  mkdir -p "${AGENT_PLIST:h}"
+  # Fixed contents; no user input is written into the plist.
+  cat > "$AGENT_PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$AGENT_LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/bin/caffeinate</string><string>-ims</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+PL
+  chmod 644 "$AGENT_PLIST"
+  launchctl bootout "gui/$UID/$AGENT_LABEL" 2>/dev/null
+  if launchctl bootstrap "gui/$UID" "$AGENT_PLIST" 2>/dev/null || agent_loaded; then
+    sleep 0.5; agent_status
+    echo "  (on a MacBook, 'system awake' applies while plugged in; the screen still locks per your settings)"
+  else
+    echo "awake: could not start agent mode (launchctl refused). The file is at $AGENT_PLIST"; return 1
+  fi
+}
+
 # ---- uninstall: awake uninstall [--all] [-y] ----
 uninstall() {
   local all=0 yes=0 a
@@ -271,6 +330,7 @@ uninstall() {
   echo "This will:"
   echo "  - turn awake off and restore your screen saver setting"
   echo "  - remove the awake menu bar icon (if added)"
+  [[ -f $AGENT_PLIST ]] && echo "  - remove agent mode (the always-on login item)"
   if (( brewed )); then echo "  - run: brew uninstall awake"; else echo "  - delete $self"; fi
   echo "  - remove any PATH line awake added to ~/.zshrc / ~/.zprofile"
   echo "  - delete ~/.awake (awake's state folder)"
@@ -291,6 +351,7 @@ uninstall() {
   # Restore the screen saver first; if that fails, stop and keep everything needed to retry.
   turn_off >/dev/null || { echo "Stopped: awake is busy or could not restore your screen saver setting. Nothing was removed; try again."; return 1; }
   rm -f "$sbdir/awake.5s.sh"
+  [[ -f $AGENT_PLIST ]] && agent off
   local f t
   for f in ~/.zshrc ~/.zprofile; do
     if [[ -f $f ]] && grep -q "$MARK" "$f"; then
@@ -340,6 +401,7 @@ case $1 in
   toggle)     if running; then turn_off; else turn_on; fi;;
   status|st)  show_status;;
   menubar)    menubar "${2:-}";;
+  agent)      agent "${2:-on}";;
   uninstall)  shift; uninstall "$@";;
   _restore)   lock && { restore; unlock; };;   # internal: called by the background process when caffeinate exits
   help|-h|--help) usage;;
