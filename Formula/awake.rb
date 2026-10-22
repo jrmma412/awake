@@ -16,7 +16,7 @@ class Awake < Formula
   def caveats
     <<~EOS
       Try:  awake 1h
-      Optional menu bar icon:  awake menubar
+      Optional menu bar icon:  awake menubar   (hide: awake menubar quit, remove: awake menubar off)
       (uses the separate SwiftBar app; awake asks before installing it)
       Optional always-on mode for agents/servers (display still sleeps and locks):  awake agent
       To remove everything later:  awake uninstall --all

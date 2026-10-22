@@ -62,8 +62,15 @@ with one-click on/off and 30m / 1h / 2h timers:
 
 ```
 awake menubar          # add it
+awake menubar quit     # hide it until next login
 awake menubar off      # remove it
 ```
+
+The icon's own menu has the same two options at the bottom (**Hide icon until next
+login** and **Remove menu bar icon**), so you can get rid of it without Terminal.
+Removing it also quits SwiftBar if awake was its only plugin. Upgrading awake
+updates the menu automatically (if you added the icon before 1.3.1, run
+`awake menubar` once to switch to the self-updating version).
 
 **This uses a separate app, [SwiftBar](https://swiftbar.app)** (free, open
 source), to draw the icon. The `awake` command itself does not need it.
@@ -77,9 +84,9 @@ source), to draw the icon. The `awake` command itself does not need it.
   existing plugin folder is kept and the icon is added there.
 - `awake uninstall --all` removes SwiftBar too, unless you have other SwiftBar
   plugins, in which case SwiftBar is left alone.
-- `awake menubar off` removes only the awake icon. SwiftBar stays installed;
-  remove it with `brew uninstall --cask swiftbar` if you don't use it for
-  anything else.
+- `awake menubar off` removes only the awake icon (and quits SwiftBar if nothing
+  else uses it). SwiftBar stays installed and may reopen at login; remove it with
+  `brew uninstall --cask swiftbar` if you don't use it for anything else.
 
 ## Optional: always-on agent mode
 
