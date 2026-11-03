@@ -2,8 +2,8 @@ class Awake < Formula
   desc "Keep your Mac awake with the screen on, like caffeinate"
   homepage "https://github.com/jrmma412/awake"
   url "https://github.com/jrmma412/awake.git",
-      tag:      "v1.4.0",
-      revision: "0d59c8d6b4905f4ed8b866d7fce703a6994b1603"
+      tag:      "v1.5.0",
+      revision: "a831f95e8914e6ded2d1dd618661e2a489446005"
   license "MIT"
   head "https://github.com/jrmma412/awake.git", branch: "main"
 
@@ -18,6 +18,7 @@ class Awake < Formula
       Try:  awake 1h
       Optional menu bar icon:  awake menubar   (hide: awake menubar quit, remove: awake menubar off)
       (uses the separate SwiftBar app; awake asks before installing it)
+      Everything at once (keep awake + jiggle + agent):  awake all   (stop: awake all off)
       Optional mouse jiggle (needs Accessibility permission):  awake jiggle 2h   (stop: awake jiggle off)
       Optional always-on mode for agents/servers (display still sleeps and locks):  awake agent
       To remove everything later:  awake uninstall --all
