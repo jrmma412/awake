@@ -10,6 +10,7 @@ awake 2h         # on for 2 hours (also 30m, 1h30m, 90 = seconds)
 awake off        # off, screen saver setting restored
 awake toggle     # flip on/off
 awake status     # on or off, and time left
+awake jiggle     # (optional) nudge the mouse so chat apps don't show you away
 awake help       # all commands
 ```
 
@@ -88,6 +89,32 @@ source), to draw the icon. The `awake` command itself does not need it.
   else uses it). SwiftBar stays installed and may reopen at login; remove it with
   `brew uninstall --cask swiftbar` if you don't use it for anything else.
 
+## Optional: mouse jiggle
+
+Keeping the Mac awake doesn't stop Teams, Slack or remote-desktop tools from showing
+you as "away": they watch for real mouse and keyboard activity. `awake jiggle` nudges
+the pointer 1 pixel out and back to look like activity:
+
+```
+awake jiggle           # on until you turn it off
+awake jiggle 2h        # on for a while (30m, 2h, 1h30m, 90 = seconds)
+awake jiggle off       # stop
+awake jiggle status    # on or off, and time left
+```
+
+- It only nudges after **30 seconds with no mouse or keyboard input**, so it never
+  fights you while you are using the Mac. The pointer ends up where it started.
+- **Needs the Accessibility permission** (macOS only lets trusted apps send input).
+  The first time, `awake jiggle` opens System Settings > Privacy & Security >
+  Accessibility; turn it on for your terminal app and run it again.
+- Independent of `awake on/off`: it does not keep the Mac awake or touch the screen
+  saver by itself, so use both together if you want both. `awake status` shows it and
+  `awake uninstall` stops it.
+- It stops on restart or logout (it is not a login item).
+- **Security:** fake input also keeps the screen saver and any inactivity auto-lock
+  from starting, and hides your real idle time from apps. Don't leave it on when you
+  walk away, and check your workplace's policy before using it on a work Mac.
+
 ## Optional: always-on agent mode
 
 For a Mac that runs background services, bots or AI agents 24/7. Not installed by default:
@@ -141,6 +168,8 @@ or on `awake off`.
   `PluginDirectory` preference.
 - If macOS refuses to restore the screen saver setting, `awake` keeps the saved
   value and tells you, so `awake off` can try again; it never throws it away.
+- `awake jiggle` sends synthetic mouse-move events (1 pixel, out and back, only after 30s of no
+  input) and needs the Accessibility permission for your terminal app; see the security note in its section.
 - On a Mac where an administrator manages the screen saver (e.g. a work
   profile), `awake` warns that the screen saver may still start.
 

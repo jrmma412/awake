@@ -2,9 +2,11 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.3.1
+VERSION=1.4.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
+JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until
+JIGGLE_EVERY=30   # seconds of no mouse/keyboard activity before a jiggle
 SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
 mkdir -p "$D" && chmod 700 "$D"
 
@@ -19,6 +21,9 @@ awake - keep your Mac awake with the screen on
   awake status       show whether it is on, and time left
   awake menubar      (optional) menu bar icon, uses the SwiftBar app;  "awake menubar off" removes it,
                      "awake menubar quit" hides it until next login (both also in the icon's menu)
+  awake jiggle       (optional) nudge the mouse 1 pixel when you've been idle, so apps (Teams, Slack,
+                     remote desktops) don't mark you away. "awake jiggle 2h" for a while,
+                     "awake jiggle off" stops it, "awake jiggle status" shows it
   awake agent        (optional) always-on mode for servers/agents: system stays awake 24/7, also after
                      restarts, but the display sleeps and the screen locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
@@ -191,6 +196,7 @@ show_status() {
   else
     echo "OFF (screen saver $(fmt "$(cur)"))"
   fi
+  jiggle_running && jiggle_status   # last, so the menu's first-line read of the main status still works
 }
 
 # ---- optional menu bar icon (SwiftBar plugin), installed with: awake menubar ----
@@ -285,6 +291,96 @@ menubar() {
   echo "awake: menu bar icon installed ($p)"
 }
 
+# ---- optional mouse jiggle, started with: awake jiggle [time] ----
+# Keeping the Mac awake does not stop chat apps and remote-desktop tools from marking you "away":
+# they watch for real keyboard/mouse activity. This nudges the pointer 1 pixel out and back whenever
+# there has been no input for JIGGLE_EVERY seconds (so it never fights you while you are using the Mac).
+# Needs the Accessibility permission (macOS only lets trusted apps send input events).
+jiggle_script() {
+  cat <<'JS'
+function run(argv) {
+  ObjC.import('CoreGraphics'); ObjC.import('Foundation'); ObjC.import('ApplicationServices');
+  if (argv[0] === 'check') return $.AXIsProcessTrusted() ? 'ok' : 'noaccess';
+  var every = parseInt(argv[0]), end = parseFloat(argv[1]);   // end = epoch seconds, 0 = no end
+  while (end === 0 || Date.now() / 1000 < end) {
+    var idle = $.CGEventSourceSecondsSinceLastEventType(1, 0xFFFFFFFF);   // HID state, any input event
+    if (idle >= every) {
+      var p = $.CGEventGetLocation($.CGEventCreate(null));
+      $.CGEventPost(0, $.CGEventCreateMouseEvent(null, 5, $.CGPointMake(p.x + 1, p.y), 0));
+      $.NSThread.sleepForTimeInterval(0.05);
+      $.CGEventPost(0, $.CGEventCreateMouseEvent(null, 5, p, 0));
+    }
+    $.NSThread.sleepForTimeInterval(5);
+  }
+}
+JS
+}
+# True only if the pid file holds a number AND that pid is really an osascript process.
+jiggle_running() {
+  [[ -f $JPID ]] || return 1
+  local p; p=$(<"$JPID")
+  [[ $p == <-> ]] || return 1
+  [[ $(ps -p "$p" -o comm= 2>/dev/null) == *osascript ]]
+}
+jiggle_status() {
+  if jiggle_running; then
+    local left=""
+    if [[ -f $JUNTIL ]]; then
+      local u; u=$(<"$JUNTIL")
+      [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left"
+    fi
+    echo "jiggle: ON${left} (nudges the mouse after ${JIGGLE_EVERY}s of no input)"
+  else
+    echo "jiggle: OFF"
+  fi
+}
+jiggle_off() {
+  lock || return 1
+  if jiggle_running; then
+    local p; p=$(<"$JPID")
+    rm -f "$JPID"          # remove first, so the background process knows we are handling it
+    kill "$p" 2>/dev/null
+  fi
+  rm -f "$JPID" "$JUNTIL"
+  unlock
+  [[ -n $1 ]] || echo "awake: jiggle OFF"
+}
+jiggle() {
+  local arg=${1:-on} secs=""
+  case $arg in
+    status) jiggle_status; return 0;;
+    off|stop) jiggle_off; return 0;;
+    toggle) if jiggle_running; then jiggle_off; return 0; fi;;
+    on) [[ -z $2 ]] || secs=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; return 1; };;
+    *) secs=$(parse_dur "$arg") || { echo "usage: awake jiggle [time|on|off|toggle|status]"; return 1; };;
+  esac
+  if jiggle_running; then echo "awake: jiggle is already on (run 'awake jiggle off' first to change the time)"; return 0; fi
+  if [[ $(osascript -l JavaScript -e "$(jiggle_script)" check 2>/dev/null) != ok ]]; then
+    echo "awake: jiggle needs the Accessibility permission for this app (Terminal, iTerm, ...)."
+    echo "  System Settings > Privacy & Security > Accessibility: turn it on for your terminal app,"
+    echo "  then run 'awake jiggle' again. (Opening that page now.)"
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null
+    return 1
+  fi
+  lock || return 1
+  local end=0
+  if [[ -n $secs ]]; then end=$(( EPOCHSECONDS + secs )); echo "$end" > "$JUNTIL"; else rm -f "$JUNTIL"; fi
+  # Values are passed as arguments, never spliced into a command string.
+  # The pid file is only trusted while it is still this process's own (see turn_on).
+  nohup zsh -c '
+    pidf=$1; untilf=$2; src=$3; shift 3
+    osascript -l JavaScript -e "$src" "$@" & p=$!
+    echo $p > "$pidf"
+    wait $p
+    if [[ -f $pidf && $(<"$pidf") == $p ]]; then rm -f "$pidf" "$untilf"; fi
+  ' _ "$JPID" "$JUNTIL" "$(jiggle_script)" "$JIGGLE_EVERY" "$end" >/dev/null 2>&1 &
+  local i; for i in {1..20}; do [[ -s $JPID ]] && break; sleep 0.1; done
+  unlock
+  if [[ -n $secs ]]; then echo "awake: jiggle ON for $(human $secs) (mouse nudged after ${JIGGLE_EVERY}s idle)"
+  else echo "awake: jiggle ON until you run 'awake jiggle off' (mouse nudged after ${JIGGLE_EVERY}s idle)"; fi
+  echo "  note: this also keeps the screen saver / auto-lock from starting while it runs"
+}
+
 # ---- optional always-on "agent mode" (LaunchAgent), installed with: awake agent ----
 # Keeps the SYSTEM awake (idle, disk, system-on-AC assertions) so background services, bots and
 # AI agents keep running, and starts again automatically at login. Unlike `awake on`, it does NOT
@@ -357,6 +453,7 @@ uninstall() {
   echo "This will:"
   echo "  - turn awake off and restore your screen saver setting"
   echo "  - remove the awake menu bar icon (if added)"
+  jiggle_running && echo "  - stop the mouse jiggle"
   [[ -f $AGENT_PLIST ]] && echo "  - remove agent mode (the always-on login item)"
   if (( brewed )); then echo "  - run: brew uninstall awake"; else echo "  - delete $self"; fi
   echo "  - remove any PATH line awake added to ~/.zshrc / ~/.zprofile"
@@ -377,6 +474,7 @@ uninstall() {
 
   # Restore the screen saver first; if that fails, stop and keep everything needed to retry.
   turn_off >/dev/null || { echo "Stopped: awake is busy or could not restore your screen saver setting. Nothing was removed; try again."; return 1; }
+  jiggle_off quiet
   rm -f "$sbdir/awake.5s.sh"
   [[ -f $AGENT_PLIST ]] && agent off
   local f t
@@ -429,6 +527,7 @@ case $1 in
   status|st)  show_status;;
   menubar)    menubar "${2:-}";;
   agent)      agent "${2:-on}";;
+  jiggle)     shift; jiggle "$@";;
   uninstall)  shift; uninstall "$@";;
   _restore)   lock && { restore; unlock; };;
   _menu)      menu;;   # internal: called by the background process when caffeinate exits
