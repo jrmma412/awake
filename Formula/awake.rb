@@ -2,8 +2,8 @@ class Awake < Formula
   desc "Keep your Mac awake with the screen on, like caffeinate"
   homepage "https://github.com/jrmma412/awake"
   url "https://github.com/jrmma412/awake.git",
-      tag:      "v1.5.0",
-      revision: "a831f95e8914e6ded2d1dd618661e2a489446005"
+      tag:      "v1.6.0",
+      revision: "ca35b779ac7a7f54011ac7c1a3653fcf20c2503f"
   license "MIT"
   head "https://github.com/jrmma412/awake.git", branch: "main"
 
@@ -15,7 +15,7 @@ class Awake < Formula
 
   def caveats
     <<~EOS
-      Try:  awake 1h
+      Try:  awake 1h   or   awake until 5pm
       Optional menu bar icon:  awake menubar   (hide: awake menubar quit, remove: awake menubar off)
       (uses the separate SwiftBar app; awake asks before installing it)
       Everything at once (keep awake + jiggle + agent):  awake all   (stop: awake all off)
