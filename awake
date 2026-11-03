@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.4.0
+VERSION=1.5.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until
@@ -27,6 +27,8 @@ awake - keep your Mac awake with the screen on
   awake agent        (optional) always-on mode for servers/agents: system stays awake 24/7, also after
                      restarts, but the display sleeps and the screen locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
+  awake all [time]   everything at once: keep awake + mouse jiggle + agent mode (agent mode has no timer;
+                     it stays until "awake all off" or "awake agent off"). "awake all off" stops all three
   awake uninstall    remove awake  (--all also removes SwiftBar; -y skips the question)
   awake help         this help
 EOT
@@ -436,6 +438,26 @@ PL
   fi
 }
 
+# ---- awake all [time|off]: awake on + jiggle + agent mode in one go ----
+# Each part is still its own command (awake on / awake jiggle / awake agent), so any one can be
+# switched off alone. A part that cannot start (e.g. no Accessibility permission for jiggle) is
+# reported and the others still run.
+all() {
+  local arg=${1:-} secs=""
+  if [[ $arg == off || $arg == stop ]]; then
+    turn_off; jiggle_off; agent off
+    return 0
+  fi
+  if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [time|off]"; return 1; }; fi
+  local rc=0 jg=" + jiggle"
+  turn_on "$secs" || rc=1
+  jiggle ${arg:+"$arg"} || { rc=1; jg=" (jiggle did not start)"; }
+  agent on || rc=1
+  echo
+  echo "awake all: on${jg}${secs:+, timer $(human $secs)}; agent mode stays on until 'awake all off' or 'awake agent off'"
+  return $rc
+}
+
 # ---- uninstall: awake uninstall [--all] [-y] ----
 uninstall() {
   local all=0 yes=0 a
@@ -528,6 +550,7 @@ case $1 in
   menubar)    menubar "${2:-}";;
   agent)      agent "${2:-on}";;
   jiggle)     shift; jiggle "$@";;
+  all)        all "${2:-}";;
   uninstall)  shift; uninstall "$@";;
   _restore)   lock && { restore; unlock; };;
   _menu)      menu;;   # internal: called by the background process when caffeinate exits

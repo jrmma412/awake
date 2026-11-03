@@ -10,6 +10,7 @@ awake 2h         # on for 2 hours (also 30m, 1h30m, 90 = seconds)
 awake off        # off, screen saver setting restored
 awake toggle     # flip on/off
 awake status     # on or off, and time left
+awake all        # everything: keep awake + jiggle + agent mode
 awake jiggle     # (optional) nudge the mouse so chat apps don't show you away
 awake help       # all commands
 ```
@@ -135,6 +136,23 @@ awake agent off        # remove it
 - Independent of `awake on/off`: you can still use those as usual. `awake status`
   shows agent mode too, and `awake uninstall` removes it.
 - On a MacBook, system sleep is only prevented while plugged in (macOS rule for `-s`).
+
+## Everything at once: `awake all`
+
+The three extras are separate, so use any one alone or all together:
+
+```
+awake all            # keep awake + mouse jiggle + agent mode
+awake all 2h         # the same; the timer covers keep-awake and jiggle
+awake all off        # stop all three
+```
+
+- Agent mode has no timer: it stays on (also after restarts) until `awake all off` or
+  `awake agent off`.
+- If one part can't start (for example jiggle without the Accessibility permission),
+  `awake all` says so and the others still run.
+- Mix and match: `awake agent` + `awake jiggle 1h`, or `awake 2h` + `awake jiggle 2h`.
+  Jiggle also keeps the screen from locking while it runs; see its security note.
 
 ## What it does
 
