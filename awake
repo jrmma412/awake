@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.5.0
+VERSION=1.6.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until
@@ -17,6 +17,8 @@ awake - keep your Mac awake with the screen on
   awake              turn on until you turn it off
   awake 2h           turn on for a while (30m, 2h, 1h30m, 90, 45s)
   awake off          turn off and restore your screen saver setting
+  awake until 5pm    turn on until a clock time (5pm, 5:30pm, 17:30; tomorrow if already past).
+                     Also works as: awake jiggle until 5pm / awake all until 5pm
   awake toggle       switch on/off
   awake status       show whether it is on, and time left
   awake menubar      (optional) menu bar icon, uses the SwiftBar app;  "awake menubar off" removes it,
@@ -73,6 +75,28 @@ parse_dur() {
   fi
   (( total > 0 && total <= 31536000 )) || return 1
   echo $(( total ))
+}
+
+# Turn a clock time (5pm, 5:30pm, 5:30 pm, 17:30, 17) into whole seconds from now, in REPLY.
+# If that time has already passed today it means tomorrow (UNTIL_TOMORROW=1). Fails on anything else.
+parse_until() {
+  local t=${(L)${1// /}} h m ap tgt day
+  [[ $t =~ '^([0-9]{1,2})(:([0-9]{2}))?(am|pm)?$' ]] || return 1
+  h=$match[1]; m=${match[3]:-00}; ap=$match[4]
+  [[ -n $ap || $t == *:* || ${#h} -ge 2 ]] || return 1   # a bare "5" is ambiguous: use 5pm or 17:00
+  h=$(( 10#$h )); m=$(( 10#$m ))
+  if [[ -n $ap ]]; then (( h >= 1 && h <= 12 )) || return 1; (( h %= 12 )); [[ $ap == pm ]] && (( h += 12 ))
+  else (( h <= 23 )) || return 1; fi
+  (( m <= 59 )) || return 1
+  day=$(date +%Y-%m-%d)
+  tgt=$(date -j -f "%Y-%m-%d %H:%M:%S" "$day $(printf %02d:%02d $h $m):00" +%s 2>/dev/null) || return 1
+  UNTIL_TOMORROW=
+  if (( tgt <= EPOCHSECONDS )); then
+    tgt=$(date -j -v+1d -f "%Y-%m-%d %H:%M:%S" "$day $(printf %02d:%02d $h $m):00" +%s 2>/dev/null) || return 1
+    UNTIL_TOMORROW=1
+  fi
+  REPLY=$(( tgt - EPOCHSECONDS ))
+  (( REPLY > 0 )) || return 1
 }
 
 human() {
@@ -190,7 +214,7 @@ show_status() {
     local left=""
     if [[ -f $UNTIL ]]; then
       local u; u=$(<"$UNTIL")
-      [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left"
+      [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left (until $(date -r "$u" '+%-I:%M %p'))"
     fi
     echo "ON${left} (saved screen saver time: $(fmt "$(cat "$SAVED" 2>/dev/null)"))"
   elif [[ -f $SAVED ]]; then
@@ -329,7 +353,7 @@ jiggle_status() {
     local left=""
     if [[ -f $JUNTIL ]]; then
       local u; u=$(<"$JUNTIL")
-      [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left"
+      [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left (until $(date -r "$u" '+%-I:%M %p'))"
     fi
     echo "jiggle: ON${left} (nudges the mouse after ${JIGGLE_EVERY}s of no input)"
   else
@@ -537,6 +561,15 @@ uninstall() {
   fi
   echo "awake is uninstalled. Open a new Terminal tab to finish."
 }
+
+# "until 5pm" anywhere in the arguments becomes a duration in seconds, so every command below just works.
+if (( ${argv[(I)until]} )); then
+  _i=${argv[(I)until]}
+  _t=${(j::)argv[$((_i+1)),-1]}
+  [[ -n $_t ]] && parse_until "$_t" || { echo "awake: bad time '$_t' after 'until' (try 5pm, 5:30pm, 17:30)"; exit 1; }
+  set -- "${(@)argv[1,$((_i-1))]}" "$REPLY"
+  echo "awake: until $(date -r $(( EPOCHSECONDS + REPLY )) '+%-I:%M %p')${UNTIL_TOMORROW:+ tomorrow}"
+fi
 
 case $1 in
   on)

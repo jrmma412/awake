@@ -8,6 +8,7 @@ your setting back when it stops.
 awake            # on until you turn it off
 awake 2h         # on for 2 hours (also 30m, 1h30m, 90 = seconds)
 awake off        # off, screen saver setting restored
+awake until 5pm  # on until a clock time (5:30pm, 17:30; tomorrow if already past)
 awake toggle     # flip on/off
 awake status     # on or off, and time left
 awake all        # everything: keep awake + jiggle + agent mode
@@ -56,6 +57,21 @@ awake uninstall --all    # same, plus the menu bar icon's SwiftBar app and its s
 
 It shows what it will remove and asks first (`-y` skips the question). Your
 screen saver setting is restored before anything is deleted.
+
+## Until a clock time
+
+Instead of a duration, give a time of day:
+
+```
+awake until 5pm              # also 5:30pm, 5:30 pm, 17:30
+awake jiggle until 5pm       # works with jiggle...
+awake all until 9am          # ...and with all
+```
+
+- If that time has already passed today, it means tomorrow (awake says so).
+- A bare `5` is rejected as ambiguous: write `5pm` or `17:00`.
+- `awake status` shows the time left and the end time.
+- Agent mode has no timer, so in `awake all until 5pm` the timer covers keep-awake and jiggle only.
 
 ## Optional: menu bar icon
 
