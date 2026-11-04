@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.6.0
+VERSION=1.6.1
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until
@@ -33,6 +33,16 @@ awake - keep your Mac awake with the screen on
                      it stays until "awake all off" or "awake agent off"). "awake all off" stops all three
   awake uninstall    remove awake  (--all also removes SwiftBar; -y skips the question)
   awake help         this help
+
+Mix and match (each part is its own switch):
+  awake all                    keep awake + jiggle + agent mode, until you turn them off
+  awake all until 5pm          the same, keep-awake and jiggle stop at 5pm (agent mode has no timer)
+  awake agent && awake jiggle  agent + jiggle (screen saver setting untouched)
+  awake 2h && awake jiggle 2h  keep awake + jiggle for 2 hours, no agent
+  awake jiggle 1h              jiggle only (apps see you active; nothing else changes)
+  awake agent                  agent only (system stays awake, screen locks normally)
+  awake status                 shows every part that is on
+  awake off | awake jiggle off | awake agent off     turn one part off   (awake all off = all three)
 EOT
 }
 

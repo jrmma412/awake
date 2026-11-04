@@ -167,8 +167,29 @@ awake all off        # stop all three
   `awake agent off`.
 - If one part can't start (for example jiggle without the Accessibility permission),
   `awake all` says so and the others still run.
-- Mix and match: `awake agent` + `awake jiggle 1h`, or `awake 2h` + `awake jiggle 2h`.
-  Jiggle also keeps the screen from locking while it runs; see its security note.
+
+## Mix and match
+
+`awake` (keep awake, screen saver off), `awake jiggle` and `awake agent` are three
+independent switches. Turn on any combination, and turn each off on its own:
+
+| You want | Run | Turn off |
+|---|---|---|
+| All three | `awake all` (or `awake all until 5pm`) | `awake all off` |
+| Agent + jiggle | `awake agent` then `awake jiggle` (or `awake jiggle 2h`) | `awake jiggle off`, `awake agent off` |
+| Keep awake + jiggle, no agent | `awake 2h` then `awake jiggle 2h` | `awake off`, `awake jiggle off` |
+| Jiggle only | `awake jiggle 1h` | `awake jiggle off` |
+| Agent only | `awake agent` | `awake agent off` |
+| Keep awake only | `awake 2h` | `awake off` |
+
+Run each part as its own command (or chain them: `awake 2h && awake jiggle 2h`).
+`awake status` lists every part that is on. Notes:
+
+- Agent mode has no timer; it stays on until `awake agent off`. A time on `awake all`
+  covers keep-awake and jiggle only.
+- Jiggle also keeps the display on and the screen from locking while it runs, even
+  with agent mode (whose own screen otherwise sleeps and locks normally). See jiggle's
+  security note.
 
 ## What it does
 
