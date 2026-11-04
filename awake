@@ -37,6 +37,7 @@ awake - keep your Mac awake with the screen on
 Mix and match (each part is its own switch):
   awake all                    keep awake + jiggle + agent mode, until you turn them off
   awake all until 5pm          the same, keep-awake and jiggle stop at 5pm (agent mode has no timer)
+  awake on jiggle 8h           keep awake + jiggle in one command, no agent (awake on jiggle until 5pm too)
   awake agent && awake jiggle  agent + jiggle (screen saver setting untouched)
   awake 2h && awake jiggle 2h  keep awake + jiggle for 2 hours, no agent
   awake jiggle 1h              jiggle only (apps see you active; nothing else changes)
@@ -583,6 +584,12 @@ fi
 
 case $1 in
   on)
+    if [[ $2 == jiggle ]]; then   # awake on jiggle [time]: keep awake + jiggle, no agent mode
+      if [[ -n $3 ]]; then s=$(parse_dur "$3") || { echo "awake: bad time '$3' (try 30m, 2h, 1h30m)"; exit 1; }; fi
+      rc=0; turn_on "$s" || rc=1
+      jiggle ${3:+"$3"} || rc=1
+      exit $rc
+    fi
     if [[ -n $2 ]]; then
       s=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; exit 1; }
     fi

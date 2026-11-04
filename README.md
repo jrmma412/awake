@@ -177,7 +177,7 @@ independent switches. Turn on any combination, and turn each off on its own:
 |---|---|---|
 | All three | `awake all` (or `awake all until 5pm`) | `awake all off` |
 | Agent + jiggle | `awake agent` then `awake jiggle` (or `awake jiggle 2h`) | `awake jiggle off`, `awake agent off` |
-| Keep awake + jiggle, no agent | `awake 2h` then `awake jiggle 2h` | `awake off`, `awake jiggle off` |
+| Keep awake + jiggle, no agent | `awake on jiggle 8h` (or `awake on jiggle until 5pm`, or `awake 2h` then `awake jiggle 2h`) | `awake off`, `awake jiggle off` |
 | Jiggle only | `awake jiggle 1h` | `awake jiggle off` |
 | Agent only | `awake agent` | `awake agent off` |
 | Keep awake only | `awake 2h` | `awake off` |
