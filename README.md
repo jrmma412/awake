@@ -158,7 +158,7 @@ awake agent off        # remove it
 The three extras are separate, so use any one alone or all together:
 
 ```
-awake all            # keep awake + mouse jiggle + agent mode
+awake all            # keep awake + mouse jiggle + agent mode ("awake all on" works too)
 awake all 2h         # the same; the timer covers keep-awake and jiggle
 awake all off        # stop all three
 ```
