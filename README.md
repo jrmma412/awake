@@ -4,6 +4,9 @@ Keep your Mac awake with the screen on, straight from Terminal. Like
 `caffeinate`, but it also turns off the screen saver while it's running and puts
 your setting back when it stops.
 
+**Also for Linux** (same commands): see [Linux](#linux) below. Everything else in
+this README describes the macOS version.
+
 ```
 awake            # on until you turn it off
 awake 2h         # on for 2 hours (also 30m, 1h30m, 90 = seconds)
@@ -195,6 +198,45 @@ Run each part as its own command (or chain them: `awake 2h && awake jiggle 2h`).
 - Jiggle also keeps the display on and the screen from locking while it runs, even
   with agent mode (whose own screen otherwise sleeps and locks normally). See jiggle's
   security note.
+
+## Linux
+
+The same `awake` command for Linux desktops, in [`linux/`](linux/). Built and tested on
+Pop!_OS 24.04 with COSMIC (Wayland); GNOME and KDE are supported in the code but not yet tested.
+
+**Install** (no sudo; goes to `~/.local/bin`, asks first):
+
+```
+curl -fsSL https://raw.githubusercontent.com/jrmma412/awake/main/linux/install.sh | bash
+```
+
+Or from a clone: `./linux/install.sh`. Options go after `bash -s --` (`-y`, `--dir DIR`).
+**Update:** run the install line again. **Uninstall:** `awake uninstall`.
+Needs `python3` with PyGObject (`python3-gi`), which desktop distributions ship by default.
+
+All the commands above work the same (`awake 2h`, `awake until 5pm`, `awake jiggle`,
+`awake jiggle random`, `awake agent`, `awake all`, `awake status`, ...). What differs:
+
+- **Keep awake** asks the desktop not to blank the screen, lock or suspend (the request a
+  video player makes: `org.freedesktop.ScreenSaver`, GNOME's session manager, KDE's power
+  management) and takes a systemd sleep lock. No setting is changed, so there is nothing to
+  restore: when awake stops for any reason (off, timer, crash, reboot) your normal settings apply.
+- **Jiggle** moves the pointer with a virtual mouse (`/dev/uinput`), the only way to do it on
+  Wayland, and only when the desktop reports you idle (Wayland idle notifications, or GNOME's
+  idle monitor). You need permission to use `/dev/uinput`: Steam's controller support already
+  grants it; otherwise `awake jiggle` prints the one-time `sudo` command. On a desktop that
+  can't report idle time, plain jiggle nudges every 30s regardless and `jiggle random` is refused.
+  `jiggle random` uses relative moves, so the distance varies with your pointer speed setting.
+- **Agent mode** on COSMIC sets "suspend when plugged in" to never (the same setting as
+  Settings > Power) and remembers your previous value; `awake agent off` puts it back, unless
+  you changed it yourself in the meantime. COSMIC needs this because its only "don't suspend"
+  request also keeps the screen on. On other desktops it is a systemd user service
+  (`awake-agent.service`) holding suspend-only requests; it starts at login
+  (`sudo loginctl enable-linger $USER` to run with nobody logged in). On battery, normal
+  suspend still applies on COSMIC.
+- **No menu bar icon yet** (`awake menubar` is macOS-only for now).
+- **Security:** the same notes apply (no auto-lock while on; jiggle hides your idle time).
+  `/dev/uinput` access lets any program you run create virtual input devices.
 
 ## What it does
 
