@@ -1,0 +1,757 @@
+#!/usr/bin/env bash
+# awake - keep your Linux PC awake with the screen on (the Linux version of awake for macOS).
+# Run `awake help` for usage.
+VERSION=1.8.0
+D=$HOME/.awake
+PIDF=$D/pid; UNTIL=$D/until; HELD=$D/held; ERRF=$D/err
+JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
+AGENT_SAVED=$D/agent.saved
+JIGGLE_EVERY=30   # seconds of no mouse/keyboard activity before a jiggle
+SELF=$(realpath -s -- "$0" 2>/dev/null || echo "$0")   # absolute path, symlinks NOT resolved
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}
+COSMIC_IDLE=$CONF/cosmic/com.system76.CosmicIdle/v1
+AGENT_UNIT=awake-agent.service
+AGENT_UNIT_FILE=$CONF/systemd/user/$AGENT_UNIT
+mkdir -p "$D" && chmod 700 "$D"
+
+usage() {
+  cat <<'EOT'
+awake - keep your Linux PC awake with the screen on
+
+  awake              turn on until you turn it off
+  awake 2h           turn on for a while (30m, 2h, 1h30m, 90, 45s)
+  awake off          turn off (your normal screen-off, lock and sleep settings apply again)
+  awake until 5pm    turn on until a clock time (5pm, 5:30pm, 17:30; tomorrow if already past).
+                     Also works as: awake jiggle until 5pm / awake all until 5pm
+  awake toggle       switch on/off
+  awake status       show whether it is on, and time left
+  awake jiggle       (optional) nudge the mouse 1 pixel when you've been idle, so apps (Teams, Slack,
+                     remote desktops) don't mark you away. "awake jiggle 2h" for a while,
+                     "awake jiggle off" stops it, "awake jiggle status" shows it
+  awake jiggle random  (optional) like jiggle, but after a varied idle wait (20-75s) the pointer
+                     glides along a curved path to a nearby random spot instead of a 1-pixel nudge.
+                     "awake jiggle random 2h" / "awake jiggle random until 5pm" for a while
+  awake agent        (optional) always-on mode for servers/agents: the system never suspends while
+                     plugged in, also after restarts, but the screen turns off and locks normally.
+                     "awake agent off" removes it, "awake agent status" shows it
+  awake all [time]   everything at once: keep awake + mouse jiggle + agent mode (agent mode has no timer;
+                     it stays until "awake all off" or "awake agent off"). "awake all off" stops all three
+  awake uninstall    remove awake  (-y skips the question)
+  awake help         this help
+
+Mix and match (each part is its own switch):
+  awake all (or: all on)       keep awake + jiggle + agent mode, until you turn them off
+  awake all until 5pm          the same, keep-awake and jiggle stop at 5pm (agent mode has no timer)
+  awake on jiggle 8h           keep awake + jiggle in one command, no agent (awake on jiggle until 5pm too)
+  awake agent && awake jiggle  agent + jiggle
+  awake 2h && awake jiggle 2h  keep awake + jiggle for 2 hours, no agent
+  awake jiggle 1h              jiggle only (apps see you active; nothing else changes)
+  awake jiggle random 1h       the same with varied, curved pointer movement
+  awake agent                  agent only (system stays awake, screen locks normally)
+  awake status                 shows every part that is on
+  awake off | awake jiggle off | awake agent off     turn one part off   (awake all off = all three)
+EOT
+}
+
+now() { printf '%(%s)T' -1; }
+
+# Turn a duration like 90, 45s, 30m, 2h, 1h30m into whole seconds. Fails on anything else.
+parse_dur() {
+  local rest=$1 total=0 n u
+  [[ -n $rest ]] || return 1
+  if [[ $rest =~ ^[0-9]+$ ]]; then (( ${#rest} <= 8 )) || return 1; total=$(( 10#$rest )); rest=
+  else
+    while [[ -n $rest ]]; do
+      [[ $rest =~ ^([0-9]+)([hms])(.*)$ ]] || return 1
+      n=${BASH_REMATCH[1]} u=${BASH_REMATCH[2]} rest=${BASH_REMATCH[3]}
+      (( ${#n} <= 6 )) || return 1
+      n=$(( 10#$n ))
+      case $u in h) (( total += n*3600 ));; m) (( total += n*60 ));; s) (( total += n ));; esac
+    done
+  fi
+  (( total > 0 && total <= 31536000 )) || return 1
+  echo $(( total ))
+}
+
+# Turn a clock time (5pm, 5:30pm, 5:30 pm, 17:30, 17) into whole seconds from now, in REPLY.
+# If that time has already passed today it means tomorrow (UNTIL_TOMORROW=1). Fails on anything else.
+parse_until() {
+  local t=${1// /} h m ap hm tgt t0
+  t=${t,,}
+  [[ $t =~ ^([0-9]{1,2})(:([0-9]{2}))?(am|pm)?$ ]] || return 1
+  h=${BASH_REMATCH[1]}; m=${BASH_REMATCH[3]:-00}; ap=${BASH_REMATCH[4]}
+  [[ -n $ap || $t == *:* || ${#h} -ge 2 ]] || return 1   # a bare "5" is ambiguous: use 5pm or 17:00
+  h=$(( 10#$h )); m=$(( 10#$m ))
+  if [[ -n $ap ]]; then (( h >= 1 && h <= 12 )) || return 1; h=$(( h % 12 )); [[ $ap == pm ]] && h=$(( h + 12 ))
+  else (( h <= 23 )) || return 1; fi
+  (( m <= 59 )) || return 1
+  hm=$(printf %02d:%02d "$h" "$m")
+  t0=$(now)
+  tgt=$(date -d "$(date -d "@$t0" +%Y-%m-%d) $hm:00" +%s 2>/dev/null) || return 1
+  UNTIL_TOMORROW=
+  if (( tgt <= t0 )); then
+    tgt=$(date -d "$(date -d "@$(( t0 + 86400 ))" +%Y-%m-%d) $hm:00" +%s 2>/dev/null) || return 1
+    UNTIL_TOMORROW=1
+  fi
+  REPLY=$(( tgt - t0 ))
+  (( REPLY > 0 )) || return 1
+}
+
+human() {
+  local s=$1 h m
+  h=$(( s/3600 )); m=$(( (s%3600)/60 ))
+  if (( h > 0 )); then echo "${h}h ${m}m"
+  elif (( m > 0 )); then echo "${m}m $(( s%60 ))s"
+  else echo "${s}s"; fi
+}
+clock() { date -d "@$1" '+%-I:%M %p'; }
+
+# The keep-awake, jiggle and agent parts are done by a small Python program (below) that talks to the
+# desktop over D-Bus and Wayland. It needs python3 with PyGObject, which desktop Linux ships by default.
+need_py() {
+  command -v python3 >/dev/null && python3 -I -c 'import gi; gi.require_version("Gio", "2.0"); from gi.repository import Gio' 2>/dev/null && return 0
+  echo "awake: needs python3 with PyGObject (the 'gi' module). Install it with your package manager:"
+  echo "  Debian/Ubuntu/Pop!_OS: sudo apt install python3-gi    Fedora: sudo dnf install python3-gobject"
+  echo "  Arch: sudo pacman -S python-gobject"
+  return 1
+}
+
+# True only if the pid file holds a number AND that pid is really awake's own helper process
+# (guards against a stale or tampered pid file pointing at something else).
+proc_is() {  # proc_is PIDFILE NAME
+  [[ -f $1 ]] || return 1
+  local p; p=$(<"$1")
+  [[ $p =~ ^[0-9]+$ ]] || return 1
+  [[ $(ps -p "$p" -o comm= 2>/dev/null) == "$2" ]]
+}
+running() { proc_is "$PIDF" awake-hold; }
+jiggle_running() { proc_is "$JPID" awake-jiggle; }
+
+# Stop a helper: remove its pid file first (so it knows we are handling the cleanup), then wait for it.
+stop_proc() {  # stop_proc PIDFILE NAME
+  proc_is "$1" "$2" || { rm -f "$1"; return 0; }
+  local p i; p=$(<"$1")
+  rm -f "$1"
+  kill "$p" 2>/dev/null
+  for i in {1..30}; do kill -0 "$p" 2>/dev/null || return 0; sleep 0.1; done
+}
+
+# Start the helper in the background, detached from this terminal. It writes its pid to PIDFILE once
+# it holds what it needs, or a reason to $ERRF. Waits up to ~5s for one of the two.
+spawn() {  # spawn PIDFILE helper-args...
+  local pidf=$1 i; shift
+  rm -f "$ERRF" "$pidf"
+  # Values are passed as arguments, never spliced into the program text.
+  setsid nohup python3 -I -c "$(helper_py)" "$@" </dev/null >/dev/null 2>"$D/helper.log" &
+  for i in {1..50}; do
+    [[ -s $pidf || -s $ERRF ]] && break
+    sleep 0.1
+  done
+  [[ -s $pidf ]]
+}
+helper_error() { if [[ -s $ERRF ]]; then cat "$ERRF"; else echo "the helper did not start (details in $D/helper.log)"; fi; }
+
+# One awake command at a time changes settings (several terminals and the timers can overlap).
+# Waits up to ~6s; a lock left by a crashed command is taken over after a minute.
+HAVE_LOCK=
+trap '[[ -n $HAVE_LOCK ]] && rmdir "$D/lock" 2>/dev/null' EXIT
+# Ctrl-C / kill: exit normally so the EXIT trap above still releases the lock.
+trap 'exit 130' INT; trap 'exit 143' TERM HUP
+lock() {
+  local i
+  for i in {1..60}; do
+    if mkdir "$D/lock" 2>/dev/null; then HAVE_LOCK=1; return 0; fi
+    [[ -n $(find "$D/lock" -maxdepth 0 -mmin +1 2>/dev/null) ]] && rmdir "$D/lock" 2>/dev/null
+    sleep 0.1
+  done
+  echo "awake: busy (another awake command is running), try again"; return 1
+}
+unlock() { [[ -n $HAVE_LOCK ]] && rmdir "$D/lock" 2>/dev/null; HAVE_LOCK=; }
+
+# ---- keep awake: awake [on] [time] ----
+# Asks the desktop not to blank the screen, lock or suspend (the same request a video player makes),
+# plus a systemd sleep lock. Nothing is written to your settings: when the helper exits (off, timer,
+# crash or reboot) the desktop drops the request and your normal settings apply again.
+turn_on() {
+  local secs=$1 end=0
+  need_py || return 1
+  lock || return 1
+  if running; then echo "awake: already on"; unlock; return 0; fi
+  rm -f "$PIDF" "$UNTIL" "$HELD"
+  if [[ -n $secs ]]; then end=$(( $(now) + secs )); echo "$end" > "$UNTIL"; fi
+  if ! spawn "$PIDF" hold display "$PIDF" "$UNTIL" "$end" "$ERRF" "$HELD"; then
+    rm -f "$UNTIL"; unlock
+    echo "awake: could not turn on: $(helper_error)"; return 1
+  fi
+  unlock
+  [[ $(cat "$HELD" 2>/dev/null) == *screen:* ]] ||
+    echo "awake: note: this desktop did not accept a keep-screen-on request, so only system sleep is blocked; the screen may still turn off and lock"
+  if [[ -n $secs ]]; then echo "awake: ON for $(human "$secs") (screen kept on, no auto-lock or sleep)"
+  else echo "awake: ON until you run 'awake off' (screen kept on, no auto-lock or sleep)"; fi
+}
+
+turn_off() {
+  lock || return 1
+  stop_proc "$PIDF" awake-hold
+  rm -f "$UNTIL" "$HELD"
+  unlock
+  [[ -n $1 ]] || echo "awake: OFF (your normal screen-off, lock and sleep settings apply again)"
+}
+
+show_status() {
+  agent_installed && agent_status
+  if running; then
+    local left="" u
+    if [[ -f $UNTIL ]]; then
+      u=$(<"$UNTIL")
+      [[ $u =~ ^[0-9]+$ ]] && (( u > $(now) )) && left=", $(human $(( u - $(now) ))) left (until $(clock "$u"))"
+    fi
+    echo "ON${left} (screen kept on, no auto-lock or sleep)"
+  else
+    echo "OFF"
+  fi
+  jiggle_running && jiggle_status
+}
+
+# ---- optional mouse jiggle, started with: awake jiggle [time] ----
+# Keeping the PC awake does not stop chat apps and remote-desktop tools from marking you "away":
+# they watch for real keyboard/mouse activity. This nudges the pointer 1 pixel out and back whenever
+# there has been no input for JIGGLE_EVERY seconds (so it never fights you while you are using the PC).
+# It uses a virtual mouse (/dev/uinput), the only way to move the pointer on Wayland, and the desktop's
+# idle notifications (Wayland ext-idle-notify, or GNOME's idle monitor) to know when you are idle.
+jiggle_status() {
+  if jiggle_running; then
+    local left="" u
+    if [[ -f $JUNTIL ]]; then
+      u=$(<"$JUNTIL")
+      [[ $u =~ ^[0-9]+$ ]] && (( u > $(now) )) && left=", $(human $(( u - $(now) ))) left (until $(clock "$u"))"
+    fi
+    if [[ $(cat "$JMODE" 2>/dev/null) == random ]]; then
+      echo "jiggle: ON, random${left} (glides the mouse to a nearby spot after 20-75s of no input)"
+    else
+      echo "jiggle: ON${left} (nudges the mouse after ${JIGGLE_EVERY}s of no input)"
+    fi
+  else
+    echo "jiggle: OFF"
+  fi
+}
+jiggle_off() {
+  lock || return 1
+  stop_proc "$JPID" awake-jiggle
+  rm -f "$JUNTIL" "$JMODE"
+  unlock
+  [[ -n $1 ]] || echo "awake: jiggle OFF"
+}
+jiggle() {
+  local mode=normal
+  if [[ ${1:-} == random ]]; then mode=random; shift; fi
+  local arg=${1:-on} secs=""
+  case $arg in
+    status) jiggle_status; return 0;;
+    off|stop) jiggle_off; return 0;;
+    toggle) if jiggle_running; then jiggle_off; return 0; fi;;
+    on) [[ -z $2 ]] || secs=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; return 1; };;
+    *) secs=$(parse_dur "$arg") || { echo "usage: awake jiggle [random] [time|on|off|toggle|status]"; return 1; };;
+  esac
+  if jiggle_running; then echo "awake: jiggle is already on (run 'awake jiggle off' first to change the time)"; return 0; fi
+  need_py || return 1
+  local chk; chk=$(python3 -I -c "$(helper_py)" jiggle-check 2>/dev/null)
+  case $chk in
+    "ok "*) ;;
+    nouinput)
+      echo "awake: jiggle needs permission to create a virtual mouse (/dev/uinput), which this PC doesn't give you yet."
+      echo "  One-time setup (asks for your password), then log out and back in:"
+      echo "    echo 'KERNEL==\"uinput\", SUBSYSTEM==\"misc\", TAG+=\"uaccess\", OPTIONS+=\"static_node=uinput\"' | sudo tee /etc/udev/rules.d/60-awake-uinput.rules"
+      echo "    sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput"
+      echo "  (Steam's controller support adds the same rule, so if you have Steam installed it may already work.)"
+      return 1;;
+    *) echo "awake: jiggle can't run here (${chk:-no answer from the helper})"; return 1;;
+  esac
+  if [[ $chk == "ok none" ]]; then
+    if [[ $mode == random ]]; then
+      echo "awake: jiggle random needs to know when you are idle, and this desktop doesn't say (it needs a Wayland"
+      echo "  desktop with idle notifications, like COSMIC, KDE or Sway, or GNOME). Plain 'awake jiggle' still works."
+      return 1
+    fi
+    echo "awake: note: this desktop doesn't report idle time, so the 1-pixel nudge happens every ${JIGGLE_EVERY}s even while you use the mouse"
+  fi
+  lock || return 1
+  local end=0
+  if [[ -n $secs ]]; then end=$(( $(now) + secs )); echo "$end" > "$JUNTIL"; else rm -f "$JUNTIL"; fi
+  echo "$mode" > "$JMODE"
+  if ! spawn "$JPID" jiggle "$JPID" "$JUNTIL" "$JIGGLE_EVERY" "$end" "$mode" "$ERRF"; then
+    rm -f "$JUNTIL" "$JMODE"; unlock
+    echo "awake: could not start jiggle: $(helper_error)"; return 1
+  fi
+  unlock
+  local how="mouse nudged after ${JIGGLE_EVERY}s idle"
+  [[ $mode == random ]] && how="random: mouse glides to a nearby spot after 20-75s idle"
+  if [[ -n $secs ]]; then echo "awake: jiggle ON for $(human "$secs") ($how)"
+  else echo "awake: jiggle ON until you run 'awake jiggle off' ($how)"; fi
+  echo "  note: this also keeps the screen from turning off and locking while it runs"
+}
+
+# ---- optional always-on "agent mode", installed with: awake agent ----
+# Keeps the SYSTEM from suspending so background services, bots and AI agents keep running, also after
+# restarts. Unlike `awake on`, the screen still turns off and locks normally.
+# On COSMIC, suspend is started by your own session, which systemd lets through any sleep lock you
+# hold yourself, and COSMIC's only "don't suspend" request also keeps the screen on. So on COSMIC agent
+# mode sets "suspend when plugged in" to never (like Settings > Power) and remembers your previous
+# value; "awake agent off" puts it back. Elsewhere it is a systemd user service that holds the desktop's
+# suspend-only inhibitors (GNOME, KDE) plus a systemd sleep lock.
+# AWAKE_AGENT_METHOD=service forces the service method (used to test it on COSMIC).
+agent_method() {
+  if [[ ${AWAKE_AGENT_METHOD:-} == service ]]; then echo service
+  elif [[ -f $AGENT_SAVED ]] || pgrep -xu "$UID" cosmic-idle >/dev/null; then echo cosmic
+  else echo service; fi
+}
+agent_installed() { [[ -f $AGENT_SAVED || -f $AGENT_UNIT_FILE ]]; }
+cosmic_suspend() { local f=$COSMIC_IDLE/suspend_on_ac_time; if [[ -f $f ]]; then cat "$f"; else echo unset; fi; }
+# Write a COSMIC setting the way COSMIC Settings does: a temp file renamed over the old one, which
+# COSMIC's idle manager (watching the folder) picks up at once.
+cosmic_write() {  # cosmic_write KEY VALUE|unset
+  local f=$COSMIC_IDLE/$1
+  if [[ $2 == unset ]]; then rm -f "$f"; return; fi
+  mkdir -p "$COSMIC_IDLE" && printf '%s' "$2" > "$f.awake-tmp" && mv -f "$f.awake-tmp" "$f"
+}
+agent_status() {
+  if [[ -f $AGENT_SAVED ]]; then
+    if [[ $(cosmic_suspend) == None ]]; then
+      echo "agent mode: ON (never suspends while plugged in, also after restarts; the screen turns off and locks normally)"
+    else
+      echo "agent mode: installed, but the suspend setting was changed since; run 'awake agent' again to re-apply"
+    fi
+  elif [[ -f $AGENT_UNIT_FILE ]]; then
+    if systemctl --user is-active --quiet "$AGENT_UNIT"; then
+      echo "agent mode: ON (system kept awake 24/7 and after restarts; the screen turns off and locks normally)"
+    else
+      echo "agent mode: installed but not running; run 'awake agent' again to restart it"
+    fi
+  else
+    echo "agent mode: not installed (add it with 'awake agent')"
+  fi
+}
+agent_off() {
+  local rc=0
+  if [[ -f $AGENT_SAVED ]]; then
+    local saved cur; saved=$(<"$AGENT_SAVED"); cur=$(cosmic_suspend)
+    if [[ $cur != None ]]; then
+      # Changed in Settings since agent mode turned it off: that newer choice is kept.
+      rm -f "$AGENT_SAVED"; echo "awake: agent mode removed (your suspend setting was changed since, so it is left as it is)"
+    elif cosmic_write suspend_on_ac_time "$saved"; then
+      rm -f "$AGENT_SAVED"; echo "awake: agent mode removed (suspend when plugged in: $(fmt_suspend "$saved") again)"
+    else
+      echo "awake: could not put back your suspend setting ($(fmt_suspend "$saved")). It is still saved; run 'awake agent off' again." >&2; rc=1
+    fi
+  fi
+  if [[ -f $AGENT_UNIT_FILE ]]; then
+    systemctl --user disable --now "$AGENT_UNIT" >/dev/null 2>&1
+    rm -f "$AGENT_UNIT_FILE"; systemctl --user daemon-reload 2>/dev/null
+    echo "awake: agent mode removed (normal sleep settings apply again)"
+  fi
+  return $rc
+}
+fmt_suspend() {
+  case $1 in
+    unset) echo "system default";;
+    None) echo "never";;
+    "Some("*")") local ms=${1#Some(}; ms=${ms%)}; [[ $ms =~ ^[0-9]+$ ]] && echo "after $(human $(( ms/1000 )))" || echo "$1";;
+    *) echo "$1";;
+  esac
+}
+agent() {
+  case ${1:-on} in
+    status) agent_status; return 0;;
+    off)
+      if agent_installed; then agent_off; else echo "awake: agent mode is not installed"; fi
+      return;;
+    on) ;;
+    *) echo "usage: awake agent [on|off|status]"; return 1;;
+  esac
+  if [[ $(agent_method) == cosmic ]]; then
+    lock || return 1
+    local cur new=0; cur=$(cosmic_suspend)
+    # Remember the real original only once, so re-running never saves our own "None" as the value to go back to.
+    [[ -f $AGENT_SAVED ]] || { printf '%s' "$cur" > "$AGENT_SAVED"; new=1; }
+    if ! cosmic_write suspend_on_ac_time None; then
+      (( new )) && rm -f "$AGENT_SAVED"; unlock
+      echo "awake: could not change COSMIC's suspend setting ($COSMIC_IDLE)"; return 1
+    fi
+    unlock
+    agent_status
+    echo "  (COSMIC: \"suspend when plugged in\" is set to never; 'awake agent off' puts back: $(fmt_suspend "$(<"$AGENT_SAVED")"))"
+    return 0
+  fi
+  need_py || return 1
+  local bin=$SELF
+  [[ $bin =~ ^[A-Za-z0-9_./-]+$ ]] || { echo "awake: install path has unusual characters ($bin); not installing agent mode"; return 1; }
+  mkdir -p "${AGENT_UNIT_FILE%/*}"
+  # Fixed contents apart from awake's own (checked) path; no user input is written into the unit.
+  cat > "$AGENT_UNIT_FILE" <<UNIT
+[Unit]
+Description=awake agent mode: keep the system from suspending (the screen still turns off and locks)
+
+[Service]
+ExecStart=$bin _agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+  chmod 644 "$AGENT_UNIT_FILE"
+  systemctl --user daemon-reload 2>/dev/null
+  if systemctl --user enable "$AGENT_UNIT" >/dev/null 2>&1 && systemctl --user restart "$AGENT_UNIT" 2>/dev/null; then
+    sleep 1; agent_status
+    echo "  (it starts when you log in; to keep it running with nobody logged in: sudo loginctl enable-linger $USER)"
+  else
+    echo "awake: could not start agent mode (systemctl --user refused). The file is at $AGENT_UNIT_FILE"; return 1
+  fi
+}
+
+# ---- awake all [time|off]: awake on + jiggle + agent mode in one go ----
+# Each part is still its own command (awake on / awake jiggle / awake agent), so any one can be
+# switched off alone. A part that cannot start (e.g. no virtual mouse permission for jiggle) is
+# reported and the others still run.
+all() {
+  [[ ${1:-} == on ]] && shift   # "awake all on [time]" is the same as "awake all [time]"
+  local arg=${1:-} secs=""
+  if [[ $arg == off || $arg == stop ]]; then
+    turn_off; jiggle_off
+    if agent_installed; then agent_off; else echo "awake: agent mode is not installed"; fi
+    return 0
+  fi
+  if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [time|off]"; return 1; }; fi
+  local rc=0 jg=" + jiggle"
+  turn_on "$secs" || rc=1
+  jiggle ${arg:+"$arg"} || { rc=1; jg=" (jiggle did not start)"; }
+  agent on || rc=1
+  echo
+  echo "awake all: on${jg}${secs:+, timer $(human "$secs")}; agent mode stays on until 'awake all off' or 'awake agent off'"
+  return $rc
+}
+
+# ---- uninstall: awake uninstall [-y] ----
+uninstall() {
+  local yes=0 a
+  for a in "$@"; do
+    case $a in -y|--yes) yes=1;; --all) ;; *) echo "usage: awake uninstall [-y]"; return 1;; esac
+  done
+  local MARK="# added by awake" self=$SELF
+  echo "This will:"
+  echo "  - turn awake off"
+  jiggle_running && echo "  - stop the mouse jiggle"
+  [[ -f $AGENT_SAVED ]] && echo "  - remove agent mode and put back your suspend setting ($(fmt_suspend "$(<"$AGENT_SAVED")"))"
+  [[ -f $AGENT_UNIT_FILE ]] && echo "  - remove agent mode (the always-on systemd user service)"
+  echo "  - delete $self"
+  echo "  - remove any PATH line awake added to ~/.bashrc / ~/.zshrc / ~/.profile"
+  echo "  - delete ~/.awake (awake's state folder)"
+  if (( ! yes )); then
+    local ans
+    if [[ -t 0 ]]; then read -r -p "Continue? [y/N] " ans
+    elif { : </dev/tty; } 2>/dev/null; then read -r -p "Continue? [y/N] " ans </dev/tty
+    else echo "Not running in a terminal: re-run with -y to confirm."; return 1; fi
+    [[ $ans == [Yy]* ]] || { echo "Cancelled. Nothing was changed."; return 0; }
+  fi
+
+  turn_off quiet || { echo "Stopped: awake is busy. Nothing was removed; try again."; return 1; }
+  jiggle_off quiet
+  # Put the suspend setting back first; if that fails, stop and keep everything needed to retry.
+  if agent_installed; then agent_off || { echo "Stopped: could not put back your suspend setting. Nothing else was removed; try again."; return 1; }; fi
+  local f t
+  for f in ~/.bashrc ~/.zshrc ~/.profile; do
+    if [[ -f $f ]] && grep -q "$MARK" "$f"; then
+      t=$(mktemp) || { echo "could not edit $f; remove the line ending in '$MARK' yourself"; continue; }
+      grep -v "$MARK" "$f" > "$t"
+      if (( $? <= 1 )); then cat "$t" > "$f" && echo "removed PATH line from $f"   # in place: keeps symlinks
+      else echo "could not edit $f; remove the line ending in '$MARK' yourself"; fi
+      rm -f "$t"
+    fi
+  done
+  rm -rf "$D"
+  rm -f "$self" && echo "removed $self"
+  echo "awake is uninstalled. Open a new terminal to finish."
+}
+
+# ---- the helper (Python, run with python3 -I -c) ----
+# hold display|system PIDFILE UNTILFILE END ERRFILE HELDFILE   keep-awake requests, held until END or killed
+# jiggle PIDFILE UNTILFILE EVERY END normal|random ERRFILE     virtual mouse + idle watching
+# jiggle-check                                                 prints "ok wayland|gnome|none" or "nouinput"
+helper_py() {
+  cat <<'PY'
+import ctypes, math, os, random, select, signal, socket, struct, sys, time
+
+def set_name(n):   # so `ps -o comm=` shows awake-hold / awake-jiggle / awake-agent
+    try: ctypes.CDLL(None).prctl(15, n.encode(), 0, 0, 0)
+    except Exception: pass
+
+def put(path, text):
+    if not path: return
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f: f.write(text)
+    os.replace(tmp, path)
+
+def mine(path):
+    try:
+        with open(path) as f: return f.read().strip() == str(os.getpid())
+    except OSError: return False
+
+def cleanup(pidf, *others):   # only if the pid file is still ours (awake off removes it first)
+    if pidf and mine(pidf):
+        for p in (pidf,) + others:
+            try: os.remove(p)
+            except OSError: pass
+
+def fail(errf, msg):
+    put(errf, msg); sys.exit(1)
+
+# ---- keep-awake requests ----
+def hold(kind, pidf, untilf, end, errf, heldf):
+    set_name('awake-hold' if pidf else 'awake-agent')
+    import gi; gi.require_version('Gio', '2.0')
+    from gi.repository import Gio, GLib
+    display = kind == 'display'
+    why = 'awake: keeping the screen on' if display else 'awake agent mode: keeping the system awake'
+    held, keep = [], []
+    def call(bus, name, path, iface, method, sig, args):
+        return bus.call_sync(name, path, iface, method, GLib.Variant(sig, args), GLib.VariantType('(u)'),
+                             Gio.DBusCallFlags.NO_AUTO_START, 5000, None)
+    try:
+        sess = Gio.bus_get_sync(Gio.BusType.SESSION); sess.set_exit_on_close(False)
+    except GLib.Error:
+        sess = None
+    if sess:
+        if display:   # COSMIC, KDE, Xfce and others: no screen off, lock or idle suspend while held
+            try:
+                call(sess, 'org.freedesktop.ScreenSaver', '/org/freedesktop/ScreenSaver', 'org.freedesktop.ScreenSaver',
+                     'Inhibit', '(ss)', ('awake', why)); held.append('screen:freedesktop')
+            except GLib.Error: pass
+        try:   # GNOME: flags 8 = idle (screen off, lock), 4 = suspend
+            call(sess, 'org.gnome.SessionManager', '/org/gnome/SessionManager', 'org.gnome.SessionManager',
+                 'Inhibit', '(susu)', ('awake', 0, why, 12 if display else 4))
+            held.append('screen:gnome' if display else 'sleep:gnome')
+        except GLib.Error: pass
+        try:   # KDE: blocks suspend only
+            call(sess, 'org.freedesktop.PowerManagement', '/org/freedesktop/PowerManagement/Inhibit',
+                 'org.freedesktop.PowerManagement.Inhibit', 'Inhibit', '(ss)', ('awake', why)); held.append('sleep:kde')
+        except GLib.Error: pass
+    try:   # systemd sleep lock (stops suspend started by other users and services)
+        sysbus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+        res, fds = sysbus.call_with_unix_fd_list_sync(
+            'org.freedesktop.login1', '/org/freedesktop/login1', 'org.freedesktop.login1.Manager', 'Inhibit',
+            GLib.Variant('(ssss)', ('sleep:idle' if display else 'sleep', 'awake', why, 'block')),
+            GLib.VariantType('(h)'), Gio.DBusCallFlags.NONE, 5000, None, None)
+        keep.append((fds, fds.get(res.unpack()[0]))); held.append('sleep:logind')
+    except GLib.Error: pass
+    if not held:
+        fail(errf, 'neither the desktop nor systemd accepted a keep-awake request')
+    put(heldf, ' '.join(held))
+    put(pidf, str(os.getpid()))
+    loop = GLib.MainLoop()
+    def tick():
+        if end and time.time() >= end: loop.quit(); return False
+        return True
+    GLib.timeout_add_seconds(2, tick)
+    for s in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, s, lambda *a: (loop.quit(), False)[1])
+    if sess: sess.connect('closed', lambda *a: loop.quit())   # logged out: the requests are gone anyway
+    try: loop.run()
+    finally: cleanup(pidf, untilf, heldf)
+
+# ---- virtual mouse (/dev/uinput) ----
+class Mouse:
+    def __init__(self):
+        import fcntl
+        self.fcntl = fcntl
+        self.fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+        for ev in (0, 1, 2): fcntl.ioctl(self.fd, 0x40045564, ev)            # UI_SET_EVBIT: SYN, KEY, REL
+        for b in (0x110, 0x111): fcntl.ioctl(self.fd, 0x40045565, b)         # UI_SET_KEYBIT: left/right button
+        for r in (0, 1): fcntl.ioctl(self.fd, 0x40045566, r)                 # UI_SET_RELBIT: X, Y
+        fcntl.ioctl(self.fd, 0x405C5503, struct.pack('<HHHH80sI', 0x06, 0x1, 0x1, 1, b'awake jiggle', 0))  # UI_DEV_SETUP
+        fcntl.ioctl(self.fd, 0x5501)                                          # UI_DEV_CREATE
+        time.sleep(0.8)   # let the desktop pick up the new device
+    def move(self, dx, dy):
+        ev = b''
+        if dx: ev += struct.pack('llHHi', 0, 0, 2, 0, dx)
+        if dy: ev += struct.pack('llHHi', 0, 0, 2, 1, dy)
+        if ev: os.write(self.fd, ev + struct.pack('llHHi', 0, 0, 0, 0, 0))
+    def close(self):
+        try: self.fcntl.ioctl(self.fd, 0x5502); os.close(self.fd)            # UI_DEV_DESTROY
+        except OSError: pass
+
+def rnd(a, b): return a + random.random() * (b - a)
+
+def nudge(m):
+    m.move(1, 0); time.sleep(0.05); m.move(-1, 0)
+
+# "awake jiggle random": glide along a curved, eased path to a nearby random spot (the desktop keeps the
+# pointer on screen). Moves only, never clicks. Relative moves, since Wayland has no "move to x,y".
+def glide(m):
+    dist, ang = rnd(40, 250), rnd(0, 2 * math.pi)
+    tx, ty = dist * math.cos(ang), dist * math.sin(ang)
+    bend = rnd(-0.5, 0.5) * dist   # control point off to one side of the straight line, for a curve
+    cx, cy = tx / 2 - math.sin(ang) * bend, ty / 2 + math.cos(ang) * bend
+    steps, sx, sy = round(rnd(18, 45)), 0, 0
+    for i in range(1, steps + 1):
+        t = i / steps
+        e = 2 * t * t if t < 0.5 else 1 - (-2 * t + 2) ** 2 / 2   # ease in-out
+        x = 2 * (1 - e) * e * cx + e * e * tx + rnd(-0.6, 0.6)
+        y = 2 * (1 - e) * e * cy + e * e * ty + rnd(-0.6, 0.6)
+        dx, dy = round(x) - sx, round(y) - sy
+        m.move(dx, dy); sx += dx; sy += dy
+        time.sleep(rnd(0.008, 0.028))
+
+# ---- knowing when you are idle ----
+class WaylandIdle:   # ext-idle-notify (COSMIC, KDE, Sway, Hyprland...), spoken directly over the socket
+    def __init__(self):
+        disp = os.environ.get('WAYLAND_DISPLAY')
+        if not disp: raise OSError('no Wayland session')
+        if not disp.startswith('/'): disp = os.path.join(os.environ.get('XDG_RUNTIME_DIR', ''), disp)
+        self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); self.s.connect(disp)
+        self.buf, self.next, self.note, self.armed = b'', 2, None, None
+        reg, cb = self.new(), self.new()
+        self.send(1, 1, struct.pack('<I', reg)); self.send(1, 0, struct.pack('<I', cb))   # get_registry, sync
+        found, done = {}, False
+        while not done:
+            for obj, op, body in self.read(5) or [(None, None, None)]:
+                if obj is None: raise OSError('no answer from the Wayland compositor')
+                if obj == reg and op == 0:
+                    name, ln = struct.unpack_from('<II', body)
+                    found[body[8:8 + ln - 1].decode()] = (name, struct.unpack_from('<I', body, 8 + ((ln + 3) & ~3))[0])
+                elif obj == cb: done = True
+        if 'ext_idle_notifier_v1' not in found or 'wl_seat' not in found: raise OSError('no idle notifications')
+        self.seat = self.bind(reg, found, 'wl_seat', 1)
+        ver = min(found['ext_idle_notifier_v1'][1], 2)
+        self.notifier = self.bind(reg, found, 'ext_idle_notifier_v1', ver)
+        self.op = 2 if ver >= 2 else 1   # v2: idle from real input only, not paused by video players
+    def new(self):
+        self.next += 1; return self.next - 1
+    def send(self, obj, op, payload=b''):
+        self.s.sendall(struct.pack('<II', obj, ((8 + len(payload)) << 16) | op) + payload)
+    def bind(self, reg, found, iface, ver):
+        i, b = self.new(), iface.encode() + b'\0'
+        self.send(reg, 0, struct.pack('<II', found[iface][0], len(b)) + b + b'\0' * (-len(b) % 4) + struct.pack('<II', ver, i))
+        return i
+    def read(self, timeout):
+        if not select.select([self.s], [], [], max(0, timeout))[0]: return []
+        data = self.s.recv(65536)
+        if not data: raise OSError('the Wayland compositor closed the connection')
+        self.buf += data; out = []
+        while len(self.buf) >= 8:
+            obj, so = struct.unpack_from('<II', self.buf)
+            if len(self.buf) < so >> 16: break
+            out.append((obj, so & 0xffff, self.buf[8:so >> 16])); self.buf = self.buf[so >> 16:]
+            if obj == 1 and so & 0xffff == 0: raise OSError('Wayland protocol error')
+        return out
+    def wait_idle(self, secs, timeout):   # True once there has been no input for secs
+        if self.armed != secs:
+            if self.note: self.send(self.note, 0)   # destroy the old notification
+            self.note, self.armed = self.new(), secs
+            self.send(self.notifier, self.op, struct.pack('<III', self.note, int(secs * 1000), self.seat))
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            for obj, op, _ in self.read(end - time.monotonic()):
+                if obj == self.note and op == 0: return True
+        return False
+
+class GnomeIdle:   # GNOME (Mutter) has no ext-idle-notify; it has an idle monitor on D-Bus
+    def __init__(self):
+        import gi; gi.require_version('Gio', '2.0')
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self.get()
+    def get(self):
+        r = self.bus.call_sync('org.gnome.Mutter.IdleMonitor', '/org/gnome/Mutter/IdleMonitor/Core',
+                               'org.gnome.Mutter.IdleMonitor', 'GetIdletime', None, self.GLib.VariantType('(t)'),
+                               self.Gio.DBusCallFlags.NO_AUTO_START, 3000, None)
+        return r.unpack()[0] / 1000
+    def wait_idle(self, secs, timeout):
+        end = time.monotonic() + timeout
+        while True:
+            idle = self.get()
+            if idle >= secs: return True
+            left = end - time.monotonic()
+            if left <= 0: return False
+            time.sleep(max(0.5, min(left, secs - idle, 5)))
+
+class NoIdle:   # nothing tells us: act every `secs` (only offered for the 1-pixel nudge)
+    def __init__(self): self.due = None
+    def wait_idle(self, secs, timeout):
+        if self.due is None: self.due = time.monotonic() + secs
+        left = self.due - time.monotonic()
+        if left > timeout: time.sleep(timeout); return False
+        time.sleep(max(0, left)); self.due = None; return True
+
+def idle_source():
+    for cls, name in ((WaylandIdle, 'wayland'), (GnomeIdle, 'gnome')):
+        try: return cls(), name
+        except Exception: pass
+    return NoIdle(), 'none'
+
+def jiggle_check():
+    try: os.close(os.open('/dev/uinput', os.O_WRONLY))
+    except OSError: print('nouinput'); return
+    print('ok ' + idle_source()[1])
+
+def jiggle(pidf, untilf, every, end, mode, errf):
+    set_name('awake-jiggle')
+    signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+    try: m = Mouse()
+    except OSError as e: fail(errf, 'could not create the virtual mouse (%s)' % e.strerror)
+    idle, _ = idle_source()
+    put(pidf, str(os.getpid()))
+    try:
+        wait = rnd(20, 75) if mode == 'random' else every
+        while not end or time.time() < end:
+            if idle.wait_idle(wait, 5 if not end else max(0.1, min(5, end - time.time()))):
+                if end and time.time() >= end: break
+                if mode == 'random': glide(m); wait = rnd(20, 75)
+                else: nudge(m)
+    finally:
+        m.close(); cleanup(pidf, untilf, pidf[:-4] + '.mode')
+
+cmd, a = sys.argv[1], sys.argv[2:]
+if cmd == 'hold': hold(a[0], a[1], a[2], float(a[3] or 0), a[4], a[5])
+elif cmd == 'jiggle': jiggle(a[0], a[1], float(a[2]), float(a[3] or 0), a[4], a[5])
+elif cmd == 'jiggle-check': jiggle_check()
+PY
+}
+
+# "until 5pm" anywhere in the arguments becomes a duration in seconds, so every command below just works.
+for (( _i = $#; _i >= 1; _i-- )); do [[ ${!_i} == until ]] && break; done
+if (( _i >= 1 )); then
+  _t=$(printf '%s' "${@:_i+1}")
+  [[ -n $_t ]] && parse_until "$_t" || { echo "awake: bad time '$_t' after 'until' (try 5pm, 5:30pm, 17:30)"; exit 1; }
+  set -- "${@:1:_i-1}" "$REPLY"
+  echo "awake: until $(clock $(( $(now) + REPLY )))${UNTIL_TOMORROW:+ tomorrow}"
+fi
+
+case $1 in
+  on)
+    if [[ $2 == jiggle ]]; then   # awake on jiggle [time]: keep awake + jiggle, no agent mode
+      if [[ -n $3 ]]; then s=$(parse_dur "$3") || { echo "awake: bad time '$3' (try 30m, 2h, 1h30m)"; exit 1; }; fi
+      rc=0; turn_on "$s" || rc=1
+      jiggle ${3:+"$3"} || rc=1
+      exit $rc
+    fi
+    if [[ -n $2 ]]; then
+      s=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; exit 1; }
+    fi
+    turn_on "$s";;
+  off|stop)   turn_off;;
+  toggle)     if running; then turn_off; else turn_on; fi;;
+  status|st)  show_status;;
+  menubar)    echo "awake: the menu bar icon is macOS-only for now; on Linux use the awake command";;
+  agent)      agent "${2:-on}";;
+  jiggle)     shift; jiggle "$@";;
+  all)        shift; all "$@";;
+  uninstall)  shift; uninstall "$@";;
+  _agent)     need_py && exec python3 -I -c "$(helper_py)" hold system "" "" 0 "" "";;   # internal: agent service
+  help|-h|--help) usage;;
+  -v|--version|version) echo "awake $VERSION (Linux)";;
+  "")         turn_on;;
+  *)
+    if s=$(parse_dur "$1"); then turn_on "$s"
+    else echo "awake: unknown command or time '$1'"; echo; usage; exit 1; fi;;
+esac
