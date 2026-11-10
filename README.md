@@ -108,6 +108,11 @@ source), to draw the icon. The `awake` command itself does not need it.
 
 ## Optional: mouse jiggle
 
+`awake jiggle random [time]` is a variant: after a varied 20-75 seconds of no input it
+glides the pointer along a curved path to a random spot 40-250 pixels away (kept on its
+screen; moves only, never clicks). Everything below applies to both; `awake jiggle status`
+shows which mode is on and `awake jiggle off` stops either.
+
 Keeping the Mac awake doesn't stop Teams, Slack or remote-desktop tools from showing
 you as "away": they watch for real mouse and keyboard activity. `awake jiggle` nudges
 the pointer 1 pixel out and back to look like activity:
