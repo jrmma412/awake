@@ -2,10 +2,10 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.6.2
+VERSION=1.7.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
-JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until
+JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
 JIGGLE_EVERY=30   # seconds of no mouse/keyboard activity before a jiggle
 SELF=${0:a}   # absolute path, symlinks NOT resolved (keeps working across Homebrew upgrades)
 mkdir -p "$D" && chmod 700 "$D"
@@ -26,6 +26,9 @@ awake - keep your Mac awake with the screen on
   awake jiggle       (optional) nudge the mouse 1 pixel when you've been idle, so apps (Teams, Slack,
                      remote desktops) don't mark you away. "awake jiggle 2h" for a while,
                      "awake jiggle off" stops it, "awake jiggle status" shows it
+  awake jiggle random  (optional) like jiggle, but after a varied idle wait (20-75s) the pointer
+                     glides along a curved path to a nearby random spot instead of a 1-pixel nudge.
+                     "awake jiggle random 2h" / "awake jiggle random until 5pm" for a while
   awake agent        (optional) always-on mode for servers/agents: system stays awake 24/7, also after
                      restarts, but the display sleeps and the screen locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
@@ -41,6 +44,7 @@ Mix and match (each part is its own switch):
   awake agent && awake jiggle  agent + jiggle (screen saver setting untouched)
   awake 2h && awake jiggle 2h  keep awake + jiggle for 2 hours, no agent
   awake jiggle 1h              jiggle only (apps see you active; nothing else changes)
+  awake jiggle random 1h       the same with varied, curved pointer movement
   awake agent                  agent only (system stays awake, screen locks normally)
   awake status                 shows every part that is on
   awake off | awake jiggle off | awake agent off     turn one part off   (awake all off = all three)
@@ -339,6 +343,7 @@ function run(argv) {
   ObjC.import('CoreGraphics'); ObjC.import('Foundation'); ObjC.import('ApplicationServices');
   if (argv[0] === 'check') return $.AXIsProcessTrusted() ? 'ok' : 'noaccess';
   var every = parseInt(argv[0]), end = parseFloat(argv[1]);   // end = epoch seconds, 0 = no end
+  if (argv[2] === 'random') return randomJiggle(end);
   while (end === 0 || Date.now() / 1000 < end) {
     var idle = $.CGEventSourceSecondsSinceLastEventType(1, 0xFFFFFFFF);   // HID state, any input event
     if (idle >= every) {
@@ -349,6 +354,43 @@ function run(argv) {
     }
     $.NSThread.sleepForTimeInterval(5);
   }
+}
+// "awake jiggle random": after a varied idle wait, glide the pointer along a curved, eased path
+// to a nearby random spot (kept on the screen it is on). Moves only, never clicks.
+function rnd(a, b) { return a + Math.random() * (b - a); }
+function randomJiggle(end) {
+  var wait = rnd(20, 75);
+  while (end === 0 || Date.now() / 1000 < end) {
+    var idle = $.CGEventSourceSecondsSinceLastEventType(1, 0xFFFFFFFF);
+    if (idle >= wait) { glide(); wait = rnd(20, 75); }
+    $.NSThread.sleepForTimeInterval(rnd(2, 6));
+  }
+}
+function glide() {
+  var p = $.CGEventGetLocation($.CGEventCreate(null));
+  var b = screenOf(p);
+  var dist = rnd(40, 250), ang = rnd(0, 2 * Math.PI);
+  var tx = clamp(p.x + dist * Math.cos(ang), b.x0 + 5, b.x1 - 5);
+  var ty = clamp(p.y + dist * Math.sin(ang), b.y0 + 5, b.y1 - 5);
+  // control point off to one side of the straight line, for a curve
+  var bend = rnd(-0.5, 0.5) * dist;
+  var cx = (p.x + tx) / 2 - Math.sin(ang) * bend, cy = (p.y + ty) / 2 + Math.cos(ang) * bend;
+  var steps = Math.round(rnd(18, 45));
+  for (var i = 1; i <= steps; i++) {
+    var t = i / steps, e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;   // ease in-out
+    var x = (1 - e) * (1 - e) * p.x + 2 * (1 - e) * e * cx + e * e * tx + rnd(-0.6, 0.6);
+    var y = (1 - e) * (1 - e) * p.y + 2 * (1 - e) * e * cy + e * e * ty + rnd(-0.6, 0.6);
+    $.CGEventPost(0, $.CGEventCreateMouseEvent(null, 5, $.CGPointMake(x, y), 0));
+    $.NSThread.sleepForTimeInterval(rnd(0.008, 0.028));
+  }
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function screenOf(p) {
+  var ids = Ref(), n = Ref();
+  $.CGGetDisplaysWithPoint(p, 1, ids, n);
+  var id = n[0] > 0 ? ids[0] : $.CGMainDisplayID();
+  var r = $.CGDisplayBounds(id);
+  return {x0: r.origin.x, y0: r.origin.y, x1: r.origin.x + r.size.width, y1: r.origin.y + r.size.height};
 }
 JS
 }
@@ -366,7 +408,11 @@ jiggle_status() {
       local u; u=$(<"$JUNTIL")
       [[ $u == <-> ]] && (( u > EPOCHSECONDS )) && left=", $(human $(( u - EPOCHSECONDS ))) left (until $(date -r "$u" '+%-I:%M %p'))"
     fi
-    echo "jiggle: ON${left} (nudges the mouse after ${JIGGLE_EVERY}s of no input)"
+    if [[ $(cat "$JMODE" 2>/dev/null) == random ]]; then
+      echo "jiggle: ON, random${left} (glides the mouse to a nearby spot after 20-75s of no input)"
+    else
+      echo "jiggle: ON${left} (nudges the mouse after ${JIGGLE_EVERY}s of no input)"
+    fi
   else
     echo "jiggle: OFF"
   fi
@@ -378,18 +424,20 @@ jiggle_off() {
     rm -f "$JPID"          # remove first, so the background process knows we are handling it
     kill "$p" 2>/dev/null
   fi
-  rm -f "$JPID" "$JUNTIL"
+  rm -f "$JPID" "$JUNTIL" "$JMODE"
   unlock
   [[ -n $1 ]] || echo "awake: jiggle OFF"
 }
 jiggle() {
+  local mode=normal
+  if [[ ${1:-} == random ]]; then mode=random; shift; fi
   local arg=${1:-on} secs=""
   case $arg in
     status) jiggle_status; return 0;;
     off|stop) jiggle_off; return 0;;
     toggle) if jiggle_running; then jiggle_off; return 0; fi;;
     on) [[ -z $2 ]] || secs=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; return 1; };;
-    *) secs=$(parse_dur "$arg") || { echo "usage: awake jiggle [time|on|off|toggle|status]"; return 1; };;
+    *) secs=$(parse_dur "$arg") || { echo "usage: awake jiggle [random] [time|on|off|toggle|status]"; return 1; };;
   esac
   if jiggle_running; then echo "awake: jiggle is already on (run 'awake jiggle off' first to change the time)"; return 0; fi
   if [[ $(osascript -l JavaScript -e "$(jiggle_script)" check 2>/dev/null) != ok ]]; then
@@ -402,6 +450,7 @@ jiggle() {
   lock || return 1
   local end=0
   if [[ -n $secs ]]; then end=$(( EPOCHSECONDS + secs )); echo "$end" > "$JUNTIL"; else rm -f "$JUNTIL"; fi
+  echo "$mode" > "$JMODE"
   # Values are passed as arguments, never spliced into a command string.
   # The pid file is only trusted while it is still this process's own (see turn_on).
   nohup zsh -c '
@@ -409,12 +458,14 @@ jiggle() {
     osascript -l JavaScript -e "$src" "$@" & p=$!
     echo $p > "$pidf"
     wait $p
-    if [[ -f $pidf && $(<"$pidf") == $p ]]; then rm -f "$pidf" "$untilf"; fi
-  ' _ "$JPID" "$JUNTIL" "$(jiggle_script)" "$JIGGLE_EVERY" "$end" >/dev/null 2>&1 &
+    if [[ -f $pidf && $(<"$pidf") == $p ]]; then rm -f "$pidf" "$untilf" "${pidf%.pid}.mode"; fi
+  ' _ "$JPID" "$JUNTIL" "$(jiggle_script)" "$JIGGLE_EVERY" "$end" "$mode" >/dev/null 2>&1 &
   local i; for i in {1..20}; do [[ -s $JPID ]] && break; sleep 0.1; done
   unlock
-  if [[ -n $secs ]]; then echo "awake: jiggle ON for $(human $secs) (mouse nudged after ${JIGGLE_EVERY}s idle)"
-  else echo "awake: jiggle ON until you run 'awake jiggle off' (mouse nudged after ${JIGGLE_EVERY}s idle)"; fi
+  local how="mouse nudged after ${JIGGLE_EVERY}s idle"
+  [[ $mode == random ]] && how="random: mouse glides to a nearby spot after 20-75s idle"
+  if [[ -n $secs ]]; then echo "awake: jiggle ON for $(human $secs) ($how)"
+  else echo "awake: jiggle ON until you run 'awake jiggle off' ($how)"; fi
   echo "  note: this also keeps the screen saver / auto-lock from starting while it runs"
 }
 
