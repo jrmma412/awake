@@ -473,6 +473,18 @@ jiggle() {
 # Keeps the SYSTEM awake (idle, disk, system-on-AC assertions) so background services, bots and
 # AI agents keep running, and starts again automatically at login. Unlike `awake on`, it does NOT
 # keep the display on and does NOT touch the screen saver, so the screen still turns off and locks.
+# ---- keep the menu bar icon up: if the icon is installed but SwiftBar is not running, open it ----
+# Runs on every user command (not on menubar/uninstall/internal ones), so "Hide icon until next login"
+# lasts until the next time you use awake or log in. Silent and never fails the command.
+ensure_menubar() {
+  local pd
+  pd=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || return 0
+  pd=${pd/#\~/$HOME}
+  [[ -e $pd/awake.5s.sh ]] || return 0
+  pgrep -xq SwiftBar || open -ga SwiftBar >/dev/null 2>&1
+  return 0
+}
+
 AGENT_LABEL=com.jrmma412.awake.agent
 AGENT_PLIST=$HOME/Library/LaunchAgents/$AGENT_LABEL.plist
 agent_loaded() { launchctl print "gui/$UID/$AGENT_LABEL" >/dev/null 2>&1; }
@@ -507,7 +519,10 @@ agent() {
 <dict>
   <key>Label</key><string>$AGENT_LABEL</string>
   <key>ProgramArguments</key>
-  <array><string>/usr/bin/caffeinate</string><string>-ims</string></array>
+  <array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>pd=\$(defaults read com.ameba.SwiftBar PluginDirectory 2&gt;/dev/null); if [ -e "\$pd/awake.5s.sh" ]; then /usr/bin/open -ga SwiftBar; fi; exec /usr/bin/caffeinate -ims</string>
+  </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Background</string>
@@ -633,6 +648,8 @@ if (( ${argv[(I)until]} )); then
   set -- "${(@)argv[1,$((_i-1))]}" "$REPLY"
   echo "awake: until $(date -r $(( EPOCHSECONDS + REPLY )) '+%-I:%M %p')${UNTIL_TOMORROW:+ tomorrow}"
 fi
+
+case $1 in menubar|uninstall|_restore|_menu|help|-h|--help|-v|--version|version) ;; *) ensure_menubar;; esac
 
 case $1 in
   on)
