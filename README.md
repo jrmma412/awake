@@ -89,6 +89,9 @@ awake menubar off      # remove it
 
 The icon's own menu has the same two options at the bottom (**Hide icon until next
 login** and **Remove menu bar icon**), so you can get rid of it without Terminal.
+If the icon is installed but SwiftBar isn't running, any `awake` command opens SwiftBar again
+(except `awake menubar ...` and `uninstall`, so hiding still works). With agent mode on, SwiftBar
+also opens at login (run `awake agent` once after upgrading to 1.9.0 to pick this up).
 Removing it also quits SwiftBar if awake was its only plugin. Upgrading awake
 updates the menu automatically (if you added the icon before 1.3.1, run
 `awake menubar` once to switch to the self-updating version).
@@ -147,7 +150,7 @@ awake jiggle status    # on or off, and time left
 For a Mac that runs background services, bots or AI agents 24/7. Not installed by default:
 
 ```
-awake agent            # add it (starts now and at every login)
+awake agent            # add it (starts now and at every login, and opens the menu bar icon's SwiftBar if installed)
 awake agent status     # is it running?
 awake agent off        # remove it
 ```
