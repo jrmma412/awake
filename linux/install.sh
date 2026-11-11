@@ -12,7 +12,7 @@ HERE=""
 [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]] && HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 main() {
   local MARK="# added by awake" TAG="awake - keep your Linux PC awake"
-  local REF=v1.8.0   # release the downloaded copy is pinned to
+  local REF=v1.9.0   # release the downloaded copy is pinned to
   local RAW=https://raw.githubusercontent.com/jrmma412/awake/$REF/linux/awake
   local yes=0 custom=""
   while [[ $# -gt 0 ]]; do

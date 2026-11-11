@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased (PR #3, `feat/jiggle-mode-switch`)
+## 1.9.0 (2026-11-11)
 
 ### Changed
+- macOS: the menu bar icon comes back by itself. Any awake command opens SwiftBar if the icon is
+  installed but SwiftBar isn't running (not for `menubar`, `uninstall` or internal commands, so
+  "Hide icon until next login" still works). The agent LaunchAgent also opens SwiftBar at login.
+  Re-run `awake agent on` once to pick up the new LaunchAgent. (PR #2)
 - `awake jiggle simple|random [time]` switches mode when jiggle is already on, instead of
   refusing with "already on". A time can be given at the same time (`random 2h`).
 - Plain `awake jiggle` / `jiggle on` / `all on` while jiggle is already on changes nothing and
@@ -19,8 +23,6 @@
 - `awake jiggle off` turns jiggle fully off. It does not fall back to simple mode.
 - A bad argument (e.g. `jiggle bogus`) prints usage and leaves a running jiggle alone; the
   switch only happens after the arguments parse.
-- No version bump or release here. The merge and release are done in a separate session,
-  which may combine this with other pending changes.
 
 ### Testing status
 - `zsh -n awake` and `bash -n linux/awake` pass; pytest 7 passed, 37 skipped (no existing
