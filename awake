@@ -29,6 +29,8 @@ awake - keep your Mac awake with the screen on
   awake jiggle random  (optional) like jiggle, but after a varied idle wait (20-75s) the pointer
                      glides along a curved path to a nearby random spot instead of a 1-pixel nudge.
                      "awake jiggle random 2h" / "awake jiggle random until 5pm" for a while
+                     Running either one while jiggle is already on switches to that mode;
+                     "awake jiggle simple" switches back to the default 1-pixel nudge.
   awake agent        (optional) always-on mode for servers/agents: system stays awake 24/7, also after
                      restarts, but the display sleeps and the screen locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
@@ -429,17 +431,23 @@ jiggle_off() {
   [[ -n $1 ]] || echo "awake: jiggle OFF"
 }
 jiggle() {
-  local mode=normal
-  if [[ ${1:-} == random ]]; then mode=random; shift; fi
+  local mode=normal explicit=""
+  case ${1:-} in
+    random) mode=random; explicit=1; shift;;
+    simple|normal) explicit=1; shift;;   # simple is the default mode, named so you can switch back to it
+  esac
   local arg=${1:-on} secs=""
   case $arg in
     status) jiggle_status; return 0;;
     off|stop) jiggle_off; return 0;;
     toggle) if jiggle_running; then jiggle_off; return 0; fi;;
     on) [[ -z $2 ]] || secs=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; return 1; };;
-    *) secs=$(parse_dur "$arg") || { echo "usage: awake jiggle [random] [time|on|off|toggle|status]"; return 1; };;
+    *) secs=$(parse_dur "$arg") || { echo "usage: awake jiggle [simple|random] [time|on|off|toggle|status]"; return 1; };;
   esac
-  if jiggle_running; then echo "awake: jiggle is already on (run 'awake jiggle off' first to change the time)"; return 0; fi
+  if jiggle_running; then
+    if [[ -n $explicit ]]; then jiggle_off quiet   # "jiggle random" / "jiggle simple" while on: switch mode
+    else echo "awake: jiggle is already on (use 'awake jiggle simple' or 'awake jiggle random' to switch mode, or 'awake jiggle off' to stop)"; return 0; fi
+  fi
   if [[ $(osascript -l JavaScript -e "$(jiggle_script)" check 2>/dev/null) != ok ]]; then
     echo "awake: jiggle needs the Accessibility permission for this app (Terminal, iTerm, ...)."
     echo "  System Settings > Privacy & Security > Accessibility: turn it on for your terminal app,"
@@ -547,7 +555,9 @@ all() {
   [[ ${1:-} == on ]] && shift   # "awake all on [time]" is the same as "awake all [time]"
   local arg=${1:-} secs=""
   if [[ $arg == off || $arg == stop ]]; then
-    turn_off; jiggle_off; agent off
+    turn_off; jiggle_off
+    if [[ -f $AGENT_PLIST ]]; then agent off; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
+    echo "awake all: everything is off"
     return 0
   fi
   if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [time|off]"; return 1; }; fi
