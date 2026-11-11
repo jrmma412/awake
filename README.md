@@ -114,7 +114,9 @@ source), to draw the icon. The `awake` command itself does not need it.
 `awake jiggle random [time]` is a variant: after a varied 20-75 seconds of no input it
 glides the pointer along a curved path to a random spot 40-250 pixels away (kept on its
 screen; moves only, never clicks). Everything below applies to both; `awake jiggle status`
-shows which mode is on and `awake jiggle off` stops either.
+shows which mode is on and `awake jiggle off` stops either. `awake jiggle simple` is the
+default 1-pixel nudge (what `awake jiggle`, `awake jiggle on` and `awake all` start); running
+`awake jiggle random` or `awake jiggle simple` while jiggle is already on switches to that mode.
 
 Keeping the Mac awake doesn't stop Teams, Slack or remote-desktop tools from showing
 you as "away": they watch for real mouse and keyboard activity. `awake jiggle` nudges
@@ -173,6 +175,10 @@ awake all off        # stop all three
 
 - Agent mode has no timer: it stays on (also after restarts) until `awake all off` or
   `awake agent off`.
+- `awake all off` always runs all three stops. Agent mode is optional and not installed
+  by default, so you will see `agent mode: nothing to stop` if you never ran `awake agent`
+  or `awake all`; that is informational, not an error. The last line, `awake all: everything
+  is off`, confirms the result.
 - If one part can't start (for example jiggle without the Accessibility permission),
   `awake all` says so and the others still run.
 
