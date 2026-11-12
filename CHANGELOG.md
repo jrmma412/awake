@@ -6,7 +6,7 @@
 - macOS: the menu bar icon comes back by itself. Any awake command opens SwiftBar if the icon is
   installed but SwiftBar isn't running (not for `menubar`, `uninstall` or internal commands, so
   "Hide icon until next login" still works). The agent LaunchAgent also opens SwiftBar at login.
-  Re-run `awake agent on` once to pick up the new LaunchAgent. (PR #2) README updated.
+  Re-run `awake agent` once to pick up the new LaunchAgent. (PR #2) README updated.
 - `awake jiggle simple|random [time]` switches mode when jiggle is already on, instead of
   refusing with "already on". A time can be given at the same time (`random 2h`).
 - Plain `awake jiggle` / `jiggle on` / `all on` while jiggle is already on changes nothing and
