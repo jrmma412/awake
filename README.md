@@ -173,6 +173,8 @@ The three extras are separate, so use any one alone or all together:
 ```
 awake all            # keep awake + mouse jiggle + agent mode ("awake all on" works too)
 awake all 2h         # the same; the timer covers keep-awake and jiggle
+awake all random      # everything, with random jiggle in one command (also `all on random`,
+                     # `all random 2h`, `all simple`; works even if it's already on)
 awake all off        # stop all three
 ```
 
