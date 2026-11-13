@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.9.0
+VERSION=1.10.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
