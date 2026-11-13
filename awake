@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.9.0
+VERSION=1.10.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
@@ -41,6 +41,7 @@ awake - keep your Mac awake with the screen on
 
 Mix and match (each part is its own switch):
   awake all (or: all on)       keep awake + jiggle + agent mode, until you turn them off
+  awake all random [time]      the same with random jiggle (also: all on random, all simple)
   awake all until 5pm          the same, keep-awake and jiggle stop at 5pm (agent mode has no timer)
   awake on jiggle 8h           keep awake + jiggle in one command, no agent (awake on jiggle until 5pm too)
   awake agent && awake jiggle  agent + jiggle (screen saver setting untouched)
@@ -553,6 +554,8 @@ PL
 # reported and the others still run.
 all() {
   [[ ${1:-} == on ]] && shift   # "awake all on [time]" is the same as "awake all [time]"
+  local jmode=""                # "awake all random [time]" / "all simple": pick the jiggle mode in one go
+  case ${1:-} in random|simple|normal) jmode=$1; shift;; esac
   local arg=${1:-} secs=""
   if [[ $arg == off || $arg == stop ]]; then
     turn_off; jiggle_off
@@ -560,13 +563,13 @@ all() {
     echo "awake all: everything is off"
     return 0
   fi
-  if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [time|off]"; return 1; }; fi
+  if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [simple|random] [time|off]"; return 1; }; fi
   local rc=0 jg=" + jiggle"
   turn_on "$secs" || rc=1
-  jiggle ${arg:+"$arg"} || { rc=1; jg=" (jiggle did not start)"; }
+  jiggle ${jmode:+"$jmode"} ${arg:+"$arg"} || { rc=1; jg=" (jiggle did not start)"; }
   agent on || rc=1
   echo
-  echo "awake all: on${jg}${secs:+, timer $(human $secs)}; agent mode stays on until 'awake all off' or 'awake agent off'"
+  echo "awake all: on${jg}${jmode:+ ($jmode)}${secs:+, timer $(human $secs)}; agent mode stays on until 'awake all off' or 'awake agent off'"
   return $rc
 }
 
