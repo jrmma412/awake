@@ -12,6 +12,9 @@
 - Applied to both `awake` (macOS) and `linux/awake`; README and `--help` text updated.
 
 ### Added
+- `awake all [simple|random] [time]` (also `all on random`): turn everything on with the chosen
+  jiggle mode in one command; works when already on. Prompted by `all on && jiggle random`
+  failing with "already on" on the work Mac (which runs the pre-PR script).
 - `awake jiggle simple` (alias `normal`): names the default 1-pixel nudge. `jiggle`,
   `jiggle on` and `all` still start it.
 
