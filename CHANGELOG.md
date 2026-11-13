@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (PR #3, `feat/jiggle-mode-switch`)
+## 1.9.0 (PR #3, `feat/jiggle-mode-switch`)
 
 ### Changed
 - `awake jiggle simple|random [time]` switches mode when jiggle is already on, instead of
@@ -22,8 +22,7 @@
 - `awake jiggle off` turns jiggle fully off. It does not fall back to simple mode.
 - A bad argument (e.g. `jiggle bogus`) prints usage and leaves a running jiggle alone; the
   switch only happens after the arguments parse.
-- No version bump or release here. The merge and release are done in a separate session,
-  which may combine this with other pending changes.
+- Released as 1.9.0 (you asked for the merge and Homebrew update directly, so no separate session).
 
 ### Testing status
 - `zsh -n awake` and `bash -n linux/awake` pass; pytest 7 passed, 37 skipped (no existing
@@ -34,5 +33,3 @@
 
 ### Open / not done
 - Installed Homebrew copy was 1.7.0 when checked (repo is 1.8.0); not upgraded.
-- Release steps for the eventual version: bump `VERSION` in `awake` and `linux/awake`, then
-  pin `Formula/awake.rb` and `install.sh`, tag, and release (as in earlier releases).

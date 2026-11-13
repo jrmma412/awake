@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # awake - keep your Linux PC awake with the screen on (the Linux version of awake for macOS).
 # Run `awake help` for usage.
-VERSION=1.8.0
+VERSION=1.9.0
 D=$HOME/.awake
 PIDF=$D/pid; UNTIL=$D/until; HELD=$D/held; ERRF=$D/err
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
