@@ -575,6 +575,12 @@ PL
 # and shows it in status. Nothing here runs unless you use 'awake display'.
 VD_FORMULA=jrmma412/vdisplay/vdisplay
 VD_PLIST=$HOME/Library/LaunchAgents/homebrew.mxcl.vdisplay.plist
+# Homebrew, also when PATH lacks it (the SwiftBar menu runs with a minimal PATH).
+brew_bin() {
+  local b; b=$(command -v brew 2>/dev/null) && { echo "$b"; return 0; }
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [[ -x $b ]] && { echo "$b"; return 0; }; done
+  return 1
+}
 vd_bin() {
   local b; b=$(command -v vdisplay 2>/dev/null) && { echo "$b"; return 0; }
   [[ -x /opt/homebrew/bin/vdisplay ]] && { echo /opt/homebrew/bin/vdisplay; return 0; }
@@ -597,7 +603,7 @@ display_line() {
 }
 display_install() {
   vd_bin >/dev/null && return 0
-  command -v brew >/dev/null || {
+  local brew; brew=$(brew_bin) || {
     echo "awake: the display add-on uses vdisplay, installed with Homebrew. See https://github.com/jrmma412/homebrew-vdisplay"; return 1; }
   if [[ -z ${AWAKE_YES:-} ]]; then
     [[ -t 0 ]] || { echo "awake: vdisplay needs installing; run 'awake display' in Terminal, or set AWAKE_YES=1"; return 1; }
@@ -606,19 +612,19 @@ display_install() {
   fi
   echo "awake: installing vdisplay with Homebrew..."
   # A tagged release if the formula has one, otherwise the latest code.
-  brew install "$VD_FORMULA" 2>/dev/null || brew install --HEAD "$VD_FORMULA" || {
+  "$brew" install "$VD_FORMULA" 2>/dev/null || "$brew" install --HEAD "$VD_FORMULA" || {
     echo "awake: vdisplay install failed. If the repo is private, sign in first: gh auth login && gh auth setup-git"; return 1; }
 }
 display() {
-  local b
+  local b brew; brew=$(brew_bin)
   case ${1:-on} in
     status) display_line; [[ $VD_RC == 2 ]] && return 1; return 0;;
     on|start)
       display_install || return 1
       b=$(vd_bin) || { echo "awake: vdisplay not found after install"; return 1; }
-      if command -v brew >/dev/null && brew list --formula vdisplay >/dev/null 2>&1; then
+      if [[ -n $brew ]] && "$brew" list --formula vdisplay >/dev/null 2>&1; then
         "$b" stop >/dev/null 2>&1   # a copy started by hand would block the login service
-        brew services start "$VD_FORMULA" >/dev/null || { echo "awake: brew services could not start vdisplay"; return 1; }
+        "$brew" services start "$VD_FORMULA" >/dev/null || { echo "awake: brew services could not start vdisplay"; return 1; }
         local i; for i in {1..30}; do "$b" status >/dev/null 2>&1 && break; sleep 0.2; done
       else
         "$b" start >/dev/null   # not from Homebrew: this session only
@@ -629,7 +635,7 @@ display() {
       [[ $VD_RC == 0 ]];;
     off|stop)
       b=$(vd_bin) || { echo "awake: display add-on is not installed"; return 0; }
-      [[ -f $VD_PLIST ]] && command -v brew >/dev/null && brew services stop "$VD_FORMULA" >/dev/null 2>&1
+      [[ -f $VD_PLIST && -n $brew ]] && "$brew" services stop "$VD_FORMULA" >/dev/null 2>&1
       "$b" stop >/dev/null 2>&1
       echo "awake: display OFF (virtual display removed, won't start at login). vdisplay itself stays installed"
       return 0;;
