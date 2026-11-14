@@ -281,9 +281,12 @@ def test_mac_display_not_installed(tmp_path):
         pytest.skip("vdisplay is really installed on this Mac")
     r = run([MAC, "display", "status"], tmp_path, env=env)
     assert r.returncode == 0 and "display: not installed" in r.stdout
-    # Not in a terminal: asks to be run interactively instead of installing anything.
+    # Not in a terminal: installs nothing. (awake finds Homebrew in /opt/homebrew even when PATH
+    # lacks it, so on a Mac with Homebrew it asks to be run in Terminal; without, it says so.)
     r = run([MAC, "display"], tmp_path, env=env)
-    assert r.returncode == 1 and "Homebrew" in r.stdout
+    assert r.returncode == 1
+    assert "needs installing" in r.stdout or "installed with Homebrew" in r.stdout
+    assert "installing vdisplay" not in r.stdout
     # awake status stays quiet about the add-on when it isn't installed.
     assert "display:" not in run([MAC, "status"], tmp_path, env=env).stdout
 
