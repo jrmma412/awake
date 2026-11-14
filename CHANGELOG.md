@@ -11,6 +11,11 @@
   lid-close sleep, so this explains what can. Pairs with the new vdisplay tool.
 - `awake status` adds a reminder line while system sleep is disabled.
 - Linux: `awake clamshell` says it's macOS-only and points to `HandleLidSwitch` in logind.conf.
+- `awake display [on|off|status]` (macOS): optional virtual-display add-on using the separate
+  vdisplay tool (jrmma412/homebrew-vdisplay). Installs it with Homebrew after asking, starts
+  it now and at login through `brew services`, and removes it with `off`. `awake status`,
+  `awake clamshell` and the menu bar icon show it (with an add/remove menu item) only when
+  vdisplay is installed. `awake uninstall` leaves vdisplay installed. Linux says it's macOS-only.
 
 ### Changed
 - macOS `awake status` now always exits 0. Before, it exited 1 whenever jiggle was off,
@@ -20,7 +25,10 @@
 - Logic checked with fake `ioreg`/`pmset` output for all four states (sleep enabled with lid
   sleep, display attached, disabled on battery, flag missing so it falls back to `pmset -g`).
   New pytest tests on the macOS CI runner confirm it never calls sudo and only calls `pmset -g`.
-  Not yet run on the real MacBook.
+  On the real MacBook (M2 Pro, macOS 26.5.1): `awake clamshell` correctly reported the lid closed
+  and no lid sleep while the monitors were attached. `awake display status`, `awake status`,
+  `awake clamshell` and the menu all showed the running virtual display (id 17). Not yet run
+  on the real Mac: `awake display` installing vdisplay and turning it on or off.
 
 ## 1.10.0 (2026-11-13)
 

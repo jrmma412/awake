@@ -290,7 +290,7 @@ menu() {
   if vd_bin >/dev/null; then
     echo "---"
     display_line >/dev/null   # sets VD_LINE and VD_RC (not in a subshell, so they stick)
-    echo "Virtual display: ${VD_LINE#display: }"
+    local vl=${VD_LINE#display: }; echo "Virtual display: ${vl//virtual display /}"
     if [[ $VD_RC == 0 || $VD_RC == 2 ]]; then
       echo "Remove virtual display | shell=$A param1=display param2=off terminal=false refresh=true"
     else

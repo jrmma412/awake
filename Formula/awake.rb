@@ -22,6 +22,7 @@ class Awake < Formula
       Optional mouse jiggle (needs Accessibility permission):  awake jiggle 2h   (stop: awake jiggle off)
       Optional always-on mode for agents/servers (display still sleeps and locks):  awake agent
       Lid closed on a MacBook? awake can't stop lid-close sleep; see:  awake clamshell
+      Optional virtual display instead of an HDMI dummy plug (installs vdisplay):  awake display
       To remove everything later:  awake uninstall --all
       (or run `awake off` before `brew uninstall awake`)
     EOS

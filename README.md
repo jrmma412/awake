@@ -16,6 +16,7 @@ awake toggle     # flip on/off
 awake status     # on or off, and time left
 awake all        # everything: keep awake + jiggle + agent mode
 awake clamshell  # will closing the lid sleep this Mac? (prints the pmset command to change it)
+awake display    # optional add-on: a virtual display instead of an HDMI dummy plug
 awake jiggle     # (optional) nudge the mouse so chat apps don't show you away
 awake help       # all commands
 ```
@@ -192,6 +193,30 @@ sudo pmset -a disablesleep 0     # undo
 so you run the printed command yourself. While sleep is disabled, `awake status` shows
 a reminder line, because the setting is easy to forget, and with the lid closed on
 battery the Mac will run until the battery is empty.
+
+## Optional: virtual display add-on (`awake display`)
+
+For a Mac that runs headless or with the lid closed and has no monitor attached, so it
+can be reached by Screen Sharing, Moonlight/Sunshine or SSH. This replaces an HDMI dummy
+plug. It uses [vdisplay](https://github.com/jrmma412/homebrew-vdisplay), a separate free
+tool. awake only installs it (after asking), starts it, and shows it. Nothing changes
+unless you run `awake display`.
+
+```
+awake display          # install vdisplay if needed, add the virtual display now and at login
+awake display status   # is it on?
+awake display off      # remove the virtual display (vdisplay itself stays installed)
+```
+
+- It runs vdisplay through `brew services`, so it comes back after restarts. For other
+  resolutions or more options, use `vdisplay` directly (`vdisplay --help`).
+- `awake status`, `awake clamshell` and the menu bar icon show it once it's installed, and
+  the menu has an add/remove item for it.
+- `awake uninstall` leaves vdisplay installed, since it's a separate tool. Remove it with
+  `brew uninstall vdisplay`.
+- Tested on an M2 Pro with two external monitors: the virtual display came online as a
+  third display without dropping either monitor.
+- It relies on a private macOS API (`CGVirtualDisplay`), so a macOS update could break it.
 
 ## Everything at once: `awake all`
 
