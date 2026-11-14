@@ -574,7 +574,8 @@ PL
 # its own tool: awake only installs it (after asking), starts it at login through brew services,
 # and shows it in status. Nothing here runs unless you use 'awake display'.
 VD_FORMULA=jrmma412/vdisplay/vdisplay
-VD_PLIST=$HOME/Library/LaunchAgents/homebrew.mxcl.vdisplay.plist
+# brew services' login item: sh.brew.* on current Homebrew, homebrew.mxcl.* on older versions.
+vd_login() { [[ -f $HOME/Library/LaunchAgents/sh.brew.vdisplay.plist || -f $HOME/Library/LaunchAgents/homebrew.mxcl.vdisplay.plist ]]; }
 # Homebrew, also when PATH lacks it (the SwiftBar menu runs with a minimal PATH).
 brew_bin() {
   local b; b=$(command -v brew 2>/dev/null) && { echo "$b"; return 0; }
@@ -593,7 +594,7 @@ display_line() {
   b=$(vd_bin) || { VD_LINE="display: not installed (add it with 'awake display')"; echo "$VD_LINE"; return 0; }
   out=$("$b" status 2>/dev/null); VD_RC=$?
   info=$(echo "$out" | sed -n 's/^ *display id \([0-9]*\), \([^ ]*\) @ \([0-9.]*\)Hz.*/id \1, \2 @ \3Hz/p' | head -1)
-  local login=""; [[ -f $VD_PLIST ]] && login=", starts at login"
+  local login=""; vd_login && login=", starts at login"
   case $VD_RC in
     0) VD_LINE="display: ON (virtual display ${info}${login})";;
     2) VD_LINE="display: running, but macOS hasn't brought the virtual display online (run 'vdisplay status')";;
@@ -635,7 +636,7 @@ display() {
       [[ $VD_RC == 0 ]];;
     off|stop)
       b=$(vd_bin) || { echo "awake: display add-on is not installed"; return 0; }
-      [[ -f $VD_PLIST && -n $brew ]] && "$brew" services stop "$VD_FORMULA" >/dev/null 2>&1
+      vd_login && [[ -n $brew ]] && "$brew" services stop "$VD_FORMULA" >/dev/null 2>&1
       "$b" stop >/dev/null 2>&1
       echo "awake: display OFF (virtual display removed, won't start at login). vdisplay itself stays installed"
       return 0;;
