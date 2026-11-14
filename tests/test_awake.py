@@ -331,3 +331,13 @@ def test_mac_display_bad_argument(tmp_path):
 @linux_only
 def test_linux_display_is_mac_only(tmp_path):
     assert "macOS-only" in run([LINUX, "display"], tmp_path).stdout
+
+
+@mac_only
+@pytest.mark.parametrize("plist", ["sh.brew.vdisplay.plist", "homebrew.mxcl.vdisplay.plist"])
+def test_mac_display_sees_login_item(tmp_path, plist):
+    env, _ = fake_vdisplay(tmp_path, 0)
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / plist).write_text("<plist/>")
+    assert "starts at login" in run([MAC, "display", "status"], tmp_path, env=env).stdout
