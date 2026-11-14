@@ -34,6 +34,9 @@ awake - keep your Mac awake with the screen on
   awake agent        (optional) always-on mode for servers/agents: system stays awake 24/7, also after
                      restarts, but the display sleeps and the screen locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
+  awake display      (optional add-on) a virtual display, so the Mac runs headless / lid closed without
+                     an HDMI dummy plug. Installs the separate vdisplay tool (asks first) and starts it
+                     now and at login. "awake display off" removes it, "awake display status" shows it
   awake clamshell    will closing the lid sleep this Mac? Shows lid and sleep state, and prints the
                      command to keep it awake with the lid closed (and to undo it). Only reads; you
                      run the printed sudo command yourself
@@ -244,6 +247,7 @@ show_status() {
     echo "OFF (screen saver $(fmt "$(cur)"))"
   fi
   jiggle_running && jiggle_status   # last, so the menu's first-line read of the main status still works
+  vd_bin >/dev/null && display_line   # only when the display add-on (vdisplay) is installed
   # Easy to forget once set, and it drains a battery with the lid closed: always mention it.
   [[ $(sleep_disabled) == yes ]] && echo "clamshell: system sleep is disabled (pmset disablesleep 1); see 'awake clamshell'"
   return 0
@@ -282,6 +286,16 @@ menu() {
     echo "Keep awake for 30 minutes | shell=$A param1=on param2=30m terminal=false refresh=true"
     echo "Keep awake for 1 hour | shell=$A param1=on param2=1h terminal=false refresh=true"
     echo "Keep awake for 2 hours | shell=$A param1=on param2=2h terminal=false refresh=true"
+  fi
+  if vd_bin >/dev/null; then
+    echo "---"
+    display_line >/dev/null   # sets VD_LINE and VD_RC (not in a subshell, so they stick)
+    echo "Virtual display: ${VD_LINE#display: }"
+    if [[ $VD_RC == 0 || $VD_RC == 2 ]]; then
+      echo "Remove virtual display | shell=$A param1=display param2=off terminal=false refresh=true"
+    else
+      echo "Add virtual display (also at login) | shell=$A param1=display param2=on terminal=false refresh=true"
+    fi
   fi
   echo "---"
   echo "Hide icon until next login | shell=$A param1=menubar param2=quit terminal=false"
@@ -554,6 +568,75 @@ PL
   fi
 }
 
+# ---- optional virtual display add-on: awake display [on|off|status] ----
+# Uses the separate vdisplay tool (github.com/jrmma412/homebrew-vdisplay), which gives the Mac a
+# virtual screen so it can run headless / lid closed without an HDMI dummy plug. vdisplay stays
+# its own tool: awake only installs it (after asking), starts it at login through brew services,
+# and shows it in status. Nothing here runs unless you use 'awake display'.
+VD_FORMULA=jrmma412/vdisplay/vdisplay
+VD_PLIST=$HOME/Library/LaunchAgents/homebrew.mxcl.vdisplay.plist
+vd_bin() {
+  local b; b=$(command -v vdisplay 2>/dev/null) && { echo "$b"; return 0; }
+  [[ -x /opt/homebrew/bin/vdisplay ]] && { echo /opt/homebrew/bin/vdisplay; return 0; }
+  return 1
+}
+# One line about the virtual display; VD_RC is vdisplay's own status code
+# (0 running and online, 1 not running, 2 running but macOS hasn't put it online).
+display_line() {
+  local b out info; VD_RC=
+  b=$(vd_bin) || { VD_LINE="display: not installed (add it with 'awake display')"; echo "$VD_LINE"; return 0; }
+  out=$("$b" status 2>/dev/null); VD_RC=$?
+  info=$(echo "$out" | sed -n 's/^ *display id \([0-9]*\), \([^ ]*\) @ \([0-9.]*\)Hz.*/id \1, \2 @ \3Hz/p' | head -1)
+  local login=""; [[ -f $VD_PLIST ]] && login=", starts at login"
+  case $VD_RC in
+    0) VD_LINE="display: ON (virtual display ${info}${login})";;
+    2) VD_LINE="display: running, but macOS hasn't brought the virtual display online (run 'vdisplay status')";;
+    *) VD_LINE="display: OFF${login:+ (set to start at login)}";;
+  esac
+  echo "$VD_LINE"
+}
+display_install() {
+  vd_bin >/dev/null && return 0
+  command -v brew >/dev/null || {
+    echo "awake: the display add-on uses vdisplay, installed with Homebrew. See https://github.com/jrmma412/homebrew-vdisplay"; return 1; }
+  if [[ -z ${AWAKE_YES:-} ]]; then
+    [[ -t 0 ]] || { echo "awake: vdisplay needs installing; run 'awake display' in Terminal, or set AWAKE_YES=1"; return 1; }
+    local ans; read -r "ans?awake: the virtual display add-on uses vdisplay (a separate free tool, built from source with Homebrew). Install it now? [Y/n] "
+    [[ -z $ans || $ans == [Yy]* ]] || { echo "awake: cancelled, nothing installed"; return 1; }
+  fi
+  echo "awake: installing vdisplay with Homebrew..."
+  # A tagged release if the formula has one, otherwise the latest code.
+  brew install "$VD_FORMULA" 2>/dev/null || brew install --HEAD "$VD_FORMULA" || {
+    echo "awake: vdisplay install failed. If the repo is private, sign in first: gh auth login && gh auth setup-git"; return 1; }
+}
+display() {
+  local b
+  case ${1:-on} in
+    status) display_line; [[ $VD_RC == 2 ]] && return 1; return 0;;
+    on|start)
+      display_install || return 1
+      b=$(vd_bin) || { echo "awake: vdisplay not found after install"; return 1; }
+      if command -v brew >/dev/null && brew list --formula vdisplay >/dev/null 2>&1; then
+        "$b" stop >/dev/null 2>&1   # a copy started by hand would block the login service
+        brew services start "$VD_FORMULA" >/dev/null || { echo "awake: brew services could not start vdisplay"; return 1; }
+        local i; for i in {1..30}; do "$b" status >/dev/null 2>&1 && break; sleep 0.2; done
+      else
+        "$b" start >/dev/null   # not from Homebrew: this session only
+        echo "awake: note: vdisplay isn't from Homebrew, so it won't start at login"
+      fi
+      display_line
+      echo "  (a virtual screen for headless/lid-closed use; 'awake clamshell' shows whether the lid will sleep the Mac)"
+      [[ $VD_RC == 0 ]];;
+    off|stop)
+      b=$(vd_bin) || { echo "awake: display add-on is not installed"; return 0; }
+      [[ -f $VD_PLIST ]] && command -v brew >/dev/null && brew services stop "$VD_FORMULA" >/dev/null 2>&1
+      "$b" stop >/dev/null 2>&1
+      echo "awake: display OFF (virtual display removed, won't start at login). vdisplay itself stays installed"
+      return 0;;
+    *) echo "usage: awake display [on|off|status]"; return 1;;
+  esac
+}
+
 # ---- awake clamshell: lid-closed sleep state, and the command to change it ----
 # Read-only. Closing a MacBook's lid uses a different sleep path that caffeinate (awake on / agent)
 # cannot block. Only macOS's own clamshell mode (on power with an external display it counts) or
@@ -583,6 +666,8 @@ clamshell() {
   echo "clamshell (lid closed) status:"
   printf "  %-32s %s\n" "power:" "${src:-unknown}" "lid closed:" "$lid" \
     "closing the lid sleeps the Mac:" "$causes" "sleep disabled (pmset):" "$dis"
+  if vd_bin >/dev/null; then printf "  %-32s %s\n" "virtual display (awake display):" "$(display_line | sed 's/^display: //')"
+  else printf "  %-32s %s\n" "virtual display (awake display):" "not installed"; fi
   echo
   if [[ $dis == yes ]]; then
     echo "Sleep is disabled: the Mac stays awake with the lid closed, and never sleeps on its own."
@@ -597,6 +682,8 @@ clamshell() {
     echo "  sudo pmset -a disablesleep 1      (undo: sudo pmset -a disablesleep 0)"
   else
     echo "Closing the lid will put this Mac to sleep. 'awake' and 'awake agent' can't stop that."
+    echo "(A virtual display from 'awake display' may count as a monitor here: turn it on, unplug other"
+    echo " displays, and run 'awake clamshell' again. If this line still says yes, use the command below.)"
     echo "To keep it awake with the lid closed (asks for your password; stops ALL system sleep until undone):"
     echo "  sudo pmset -a disablesleep 1"
     echo "To undo:"
@@ -648,6 +735,7 @@ uninstall() {
   echo "  - remove the awake menu bar icon (if added)"
   jiggle_running && echo "  - stop the mouse jiggle"
   [[ -f $AGENT_PLIST ]] && echo "  - remove agent mode (the always-on login item)"
+  vd_bin >/dev/null && echo "  - keep vdisplay (the display add-on is a separate tool; remove it with: brew uninstall vdisplay)"
   if (( brewed )); then echo "  - run: brew uninstall awake"; else echo "  - delete $self"; fi
   echo "  - remove any PATH line awake added to ~/.zshrc / ~/.zprofile"
   echo "  - delete ~/.awake (awake's state folder)"
@@ -739,6 +827,7 @@ case $1 in
   agent)      agent "${2:-on}";;
   jiggle)     shift; jiggle "$@";;
   clamshell)  clamshell "${2:-}";;
+  display)    display "${2:-on}";;
   all)        shift; all "$@";;
   uninstall)  shift; uninstall "$@";;
   _restore)   lock && { restore; unlock; };;

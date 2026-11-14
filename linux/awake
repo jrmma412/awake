@@ -753,6 +753,7 @@ case $1 in
   toggle)     if running; then turn_off; else turn_on; fi;;
   status|st)  show_status;;
   menubar)    echo "awake: the menu bar icon is macOS-only for now; on Linux use the awake command";;
+  display)    echo "awake: the virtual display add-on (vdisplay) is macOS-only for now";;
   clamshell)  echo "awake: clamshell is macOS-only. On Linux, what closing the lid does is set by HandleLidSwitch in /etc/systemd/logind.conf";;
   agent)      agent "${2:-on}";;
   jiggle)     shift; jiggle "$@";;

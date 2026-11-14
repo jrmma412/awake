@@ -253,3 +253,78 @@ def test_mac_clamshell_bad_argument(tmp_path):
 def test_linux_clamshell_is_mac_only(tmp_path):
     r = run([LINUX, "clamshell"], tmp_path)
     assert "macOS-only" in r.stdout
+
+
+def fake_vdisplay(tmp_path, status_rc=0):
+    """A stand-in vdisplay on PATH: logs its calls, and `status` answers with status_rc."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir(exist_ok=True)
+    calls = tmp_path / "vd-calls.log"
+    (fake / "vdisplay").write_text(f"""#!/bin/sh
+echo "vdisplay $*" >> "{calls}"
+if [ "$1" = status ]; then
+  [ {status_rc} -eq 1 ] && {{ echo "vdisplay: not running"; exit 1; }}
+  echo "vdisplay: running (pid 4242)"
+  echo '  display id 17, 1920x1080 @ 60Hz, name "vdisplay"'
+  exit {status_rc}
+fi
+exit 0
+""")
+    (fake / "vdisplay").chmod(0o755)
+    return {"PATH": f"{fake}:{os.environ['PATH']}"}, calls
+
+
+@mac_only
+def test_mac_display_not_installed(tmp_path):
+    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}   # no Homebrew, no vdisplay
+    if Path("/opt/homebrew/bin/vdisplay").exists():
+        pytest.skip("vdisplay is really installed on this Mac")
+    r = run([MAC, "display", "status"], tmp_path, env=env)
+    assert r.returncode == 0 and "display: not installed" in r.stdout
+    # Not in a terminal: asks to be run interactively instead of installing anything.
+    r = run([MAC, "display"], tmp_path, env=env)
+    assert r.returncode == 1 and "Homebrew" in r.stdout
+    # awake status stays quiet about the add-on when it isn't installed.
+    assert "display:" not in run([MAC, "status"], tmp_path, env=env).stdout
+
+
+@mac_only
+@pytest.mark.parametrize("rc,expect", [(0, "display: ON (virtual display id 17, 1920x1080 @ 60Hz"),
+                                       (1, "display: OFF"),
+                                       (2, "hasn't brought the virtual display online")])
+def test_mac_display_status_reads_vdisplay(tmp_path, rc, expect):
+    env, calls = fake_vdisplay(tmp_path, rc)
+    r = run([MAC, "display", "status"], tmp_path, env=env)
+    assert expect in r.stdout
+    assert r.returncode == (1 if rc == 2 else 0)
+    assert expect in run([MAC, "status"], tmp_path, env=env).stdout
+    assert "virtual display (awake display):" in run([MAC, "clamshell"], tmp_path, env=env).stdout
+
+
+@mac_only
+def test_mac_display_menu_items(tmp_path):
+    env, _ = fake_vdisplay(tmp_path, 0)
+    out = run([MAC, "_menu"], tmp_path, env=env).stdout
+    assert "Virtual display: ON" in out and "param1=display param2=off" in out
+    env, _ = fake_vdisplay(tmp_path, 1)   # same fake, now reporting "not running"
+    out = run([MAC, "_menu"], tmp_path, env=env).stdout
+    assert "param1=display param2=on" in out
+
+
+@mac_only
+def test_mac_display_off_stops_vdisplay(tmp_path):
+    env, calls = fake_vdisplay(tmp_path, 0)
+    r = run([MAC, "display", "off"], tmp_path, env=env)
+    assert r.returncode == 0 and "display OFF" in r.stdout
+    assert "vdisplay stop" in calls.read_text()
+
+
+@mac_only
+def test_mac_display_bad_argument(tmp_path):
+    r = run([MAC, "display", "bogus"], tmp_path)
+    assert r.returncode == 1 and "usage: awake display" in r.stdout
+
+
+@linux_only
+def test_linux_display_is_mac_only(tmp_path):
+    assert "macOS-only" in run([LINUX, "display"], tmp_path).stdout
