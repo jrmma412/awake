@@ -222,3 +222,34 @@ def test_mac_rejects_bad_times(tmp_path):
     r = run([MAC, "until", "5"], tmp_path)
     assert r.returncode == 1 and "bad time" in r.stdout
     assert not (tmp_path / ".awake" / "pid").exists()
+
+
+@mac_only
+def test_mac_clamshell_only_reads(tmp_path):
+    """awake clamshell prints the state and never runs sudo or changes power settings."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    calls = tmp_path / "calls.log"
+    (fake / "sudo").write_text(f'#!/bin/sh\necho "sudo $*" >> "{calls}"\nexit 1\n')
+    (fake / "pmset").write_text(f'#!/bin/sh\necho "pmset $*" >> "{calls}"\nexec /usr/bin/pmset "$@"\n')
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    r = run([MAC, "clamshell"], tmp_path, env={"PATH": f"{fake}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "closing the lid sleeps the Mac:" in r.stdout
+    assert "sleep disabled (pmset):" in r.stdout
+    logged = calls.read_text().splitlines() if calls.exists() else []
+    assert not [c for c in logged if c.startswith("sudo")]
+    assert all(c.split()[1] == "-g" for c in logged if c.startswith("pmset"))
+
+
+@mac_only
+def test_mac_clamshell_bad_argument(tmp_path):
+    r = run([MAC, "clamshell", "on"], tmp_path)
+    assert r.returncode == 1 and "usage: awake clamshell" in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_is_mac_only(tmp_path):
+    r = run([LINUX, "clamshell"], tmp_path)
+    assert "macOS-only" in r.stdout

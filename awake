@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.10.0
+VERSION=1.11.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
@@ -34,6 +34,9 @@ awake - keep your Mac awake with the screen on
   awake agent        (optional) always-on mode for servers/agents: system stays awake 24/7, also after
                      restarts, but the display sleeps and the screen locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
+  awake clamshell    will closing the lid sleep this Mac? Shows lid and sleep state, and prints the
+                     command to keep it awake with the lid closed (and to undo it). Only reads; you
+                     run the printed sudo command yourself
   awake all [time]   everything at once: keep awake + mouse jiggle + agent mode (agent mode has no timer;
                      it stays until "awake all off" or "awake agent off"). "awake all off" stops all three
   awake uninstall    remove awake  (--all also removes SwiftBar; -y skips the question)
@@ -241,6 +244,9 @@ show_status() {
     echo "OFF (screen saver $(fmt "$(cur)"))"
   fi
   jiggle_running && jiggle_status   # last, so the menu's first-line read of the main status still works
+  # Easy to forget once set, and it drains a battery with the lid closed: always mention it.
+  [[ $(sleep_disabled) == yes ]] && echo "clamshell: system sleep is disabled (pmset disablesleep 1); see 'awake clamshell'"
+  return 0
 }
 
 # ---- optional menu bar icon (SwiftBar plugin), installed with: awake menubar ----
@@ -548,6 +554,56 @@ PL
   fi
 }
 
+# ---- awake clamshell: lid-closed sleep state, and the command to change it ----
+# Read-only. Closing a MacBook's lid uses a different sleep path that caffeinate (awake on / agent)
+# cannot block. Only macOS's own clamshell mode (on power with an external display it counts) or
+# `pmset disablesleep 1` keeps it awake. awake never runs sudo: it prints the command for you to run.
+
+# A flag from the kernel power manager (IOPMrootDomain): yes / no / n/a.
+pm_flag() {
+  local v
+  v=$(ioreg -r -c IOPMrootDomain -d 1 2>/dev/null | grep -m1 "\"$1\" = " | sed 's/.* = //')
+  case $v in Yes) echo yes;; No) echo no;; *) echo n/a;; esac
+}
+# Whether `pmset disablesleep 1` is in effect: yes / no / n/a. Only ever reads (pmset -g).
+sleep_disabled() {
+  local v; v=$(pm_flag SleepDisabled)
+  if [[ $v == n/a ]]; then
+    case $(pmset -g 2>/dev/null | awk '$1 == "SleepDisabled" {print $2; exit}') in 1) v=yes;; 0) v=no;; esac
+  fi
+  echo $v
+}
+clamshell() {
+  case ${1:-status} in status) ;; *) echo "usage: awake clamshell [status]"; return 1;; esac
+  local lid causes dis src
+  lid=$(pm_flag AppleClamshellState)
+  causes=$(pm_flag AppleClamshellCausesSleep)
+  dis=$(sleep_disabled)
+  src=$(pmset -g batt 2>/dev/null | sed -n "s/.*drawing from '\(.*\)'.*/\1/p" | head -1)
+  echo "clamshell (lid closed) status:"
+  printf "  %-32s %s\n" "power:" "${src:-unknown}" "lid closed:" "$lid" \
+    "closing the lid sleeps the Mac:" "$causes" "sleep disabled (pmset):" "$dis"
+  echo
+  if [[ $dis == yes ]]; then
+    echo "Sleep is disabled: the Mac stays awake with the lid closed, and never sleeps on its own."
+    [[ -z $src || $src == "AC Power" ]] || echo "It's on battery right now, so it will run until the battery is empty. Plug it in."
+    echo "To undo (asks for your password):"
+    echo "  sudo pmset -a disablesleep 0"
+  elif [[ $causes == n/a && $lid == n/a ]]; then
+    echo "macOS doesn't report a lid here (desktop Mac or virtual machine), so there's nothing to change."
+  elif [[ $causes == no ]]; then
+    echo "Closing the lid won't sleep this Mac right now: macOS counts an attached display for clamshell mode."
+    echo "If you unplug that display, check again. To stay awake with the lid closed regardless (asks for your password):"
+    echo "  sudo pmset -a disablesleep 1      (undo: sudo pmset -a disablesleep 0)"
+  else
+    echo "Closing the lid will put this Mac to sleep. 'awake' and 'awake agent' can't stop that."
+    echo "To keep it awake with the lid closed (asks for your password; stops ALL system sleep until undone):"
+    echo "  sudo pmset -a disablesleep 1"
+    echo "To undo:"
+    echo "  sudo pmset -a disablesleep 0"
+  fi
+}
+
 # ---- awake all [time|off]: awake on + jiggle + agent mode in one go ----
 # Each part is still its own command (awake on / awake jiggle / awake agent), so any one can be
 # switched off alone. A part that cannot start (e.g. no Accessibility permission for jiggle) is
@@ -682,6 +738,7 @@ case $1 in
   menubar)    menubar "${2:-}";;
   agent)      agent "${2:-on}";;
   jiggle)     shift; jiggle "$@";;
+  clamshell)  clamshell "${2:-}";;
   all)        shift; all "$@";;
   uninstall)  shift; uninstall "$@";;
   _restore)   lock && { restore; unlock; };;

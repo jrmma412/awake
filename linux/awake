@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # awake - keep your Linux PC awake with the screen on (the Linux version of awake for macOS).
 # Run `awake help` for usage.
-VERSION=1.10.0
+VERSION=1.11.0
 D=$HOME/.awake
 PIDF=$D/pid; UNTIL=$D/until; HELD=$D/held; ERRF=$D/err
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
@@ -753,6 +753,7 @@ case $1 in
   toggle)     if running; then turn_off; else turn_on; fi;;
   status|st)  show_status;;
   menubar)    echo "awake: the menu bar icon is macOS-only for now; on Linux use the awake command";;
+  clamshell)  echo "awake: clamshell is macOS-only. On Linux, what closing the lid does is set by HandleLidSwitch in /etc/systemd/logind.conf";;
   agent)      agent "${2:-on}";;
   jiggle)     shift; jiggle "$@";;
   all)        shift; all "$@";;

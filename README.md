@@ -15,6 +15,7 @@ awake until 5pm  # on until a clock time (5:30pm, 17:30; tomorrow if already pas
 awake toggle     # flip on/off
 awake status     # on or off, and time left
 awake all        # everything: keep awake + jiggle + agent mode
+awake clamshell  # will closing the lid sleep this Mac? (prints the pmset command to change it)
 awake jiggle     # (optional) nudge the mouse so chat apps don't show you away
 awake help       # all commands
 ```
@@ -165,6 +166,32 @@ awake agent off        # remove it
 - Independent of `awake on/off`: you can still use those as usual. `awake status`
   shows agent mode too, and `awake uninstall` removes it.
 - On a MacBook, system sleep is only prevented while plugged in (macOS rule for `-s`).
+- It does **not** stop sleep when you close a MacBook's lid. See `awake clamshell` below.
+
+## Lid closed: `awake clamshell`
+
+Closing a MacBook's lid uses a separate sleep path that no keep-awake tool can block,
+including `awake`, `awake agent` and `caffeinate`. The Mac only stays awake with the
+lid closed if macOS's own clamshell mode applies (on power with an external display,
+dummy plug, or virtual display it counts) or if sleep is disabled with `pmset`.
+
+```
+awake clamshell        # will closing the lid sleep this Mac? and what to do about it
+```
+
+It shows the power source, whether the lid is closed, whether closing it would sleep
+the Mac (read from macOS's power manager), and whether `pmset disablesleep` is on. Then
+it prints the exact command to run:
+
+```
+sudo pmset -a disablesleep 1     # stay awake with the lid closed (stops ALL system sleep)
+sudo pmset -a disablesleep 0     # undo
+```
+
+`awake clamshell` only reads settings. It never runs `sudo` or changes power settings,
+so you run the printed command yourself. While sleep is disabled, `awake status` shows
+a reminder line, because the setting is easy to forget, and with the lid closed on
+battery the Mac will run until the battery is empty.
 
 ## Everything at once: `awake all`
 

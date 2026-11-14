@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.11.0 (2026-11-14)
+
+### Added
+- `awake clamshell` (macOS): shows the power source, whether the lid is closed, whether
+  closing it would sleep the Mac (`AppleClamshellCausesSleep` from IOPMrootDomain), and
+  whether `pmset disablesleep` is on. Prints the exact `sudo pmset -a disablesleep 1/0`
+  command for you to run. It only reads (`ioreg`, `pmset -g`) and never runs sudo.
+  Prompted by the clamshell MacBook Pro setup: `awake agent` (caffeinate) can't stop
+  lid-close sleep, so this explains what can. Pairs with the new vdisplay tool.
+- `awake status` adds a reminder line while system sleep is disabled.
+- Linux: `awake clamshell` says it's macOS-only and points to `HandleLidSwitch` in logind.conf.
+
+### Changed
+- macOS `awake status` now always exits 0. Before, it exited 1 whenever jiggle was off,
+  which was a side effect of its last line rather than intended.
+
+### Testing status
+- Logic checked with fake `ioreg`/`pmset` output for all four states (sleep enabled with lid
+  sleep, display attached, disabled on battery, flag missing so it falls back to `pmset -g`).
+  New pytest tests on the macOS CI runner confirm it never calls sudo and only calls `pmset -g`.
+  Not yet run on the real MacBook.
+
 ## 1.10.0 (2026-11-13)
 
 ### Added

@@ -21,6 +21,7 @@ class Awake < Formula
       Everything at once (keep awake + jiggle + agent):  awake all   (stop: awake all off)
       Optional mouse jiggle (needs Accessibility permission):  awake jiggle 2h   (stop: awake jiggle off)
       Optional always-on mode for agents/servers (display still sleeps and locks):  awake agent
+      Lid closed on a MacBook? awake can't stop lid-close sleep; see:  awake clamshell
       To remove everything later:  awake uninstall --all
       (or run `awake off` before `brew uninstall awake`)
     EOS
