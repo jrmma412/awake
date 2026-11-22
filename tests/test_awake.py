@@ -2,7 +2,9 @@
 Linux tests run on Linux, macOS tests on macOS (CI runs both)."""
 import ast
 import os
+import pwd
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +19,9 @@ mac_only = pytest.mark.skipif(sys.platform != "darwin", reason="macOS version")
 
 
 def run(cmd, home, **kw):
-    env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
+    # AWAKE_LID_CONF: never read the real /etc/systemd/logind.conf.d (a file there would change the output).
+    env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"),
+               AWAKE_LID_CONF=str(home / "awake-lid.conf"))
     env.update(kw.pop("env", {}))
     return subprocess.run([str(c) for c in cmd], capture_output=True, text=True, env=env, timeout=60, **kw)
 
@@ -81,7 +85,8 @@ def test_linux_version_and_help(tmp_path):
 
 @linux_only
 def test_linux_status_off_and_unknown_command(tmp_path):
-    assert run([LINUX, "status"], tmp_path).stdout.strip() == "OFF"
+    r = run([LINUX, "status"], tmp_path)
+    assert r.stdout.strip() == "OFF" and r.returncode == 0   # 0 also when jiggle is off
     r = run([LINUX, "2x"], tmp_path)
     assert r.returncode == 1 and "unknown command or time" in r.stdout
     r = run([LINUX, "until", "5"], tmp_path)
@@ -195,8 +200,10 @@ def test_linux_install_and_uninstall(tmp_path):
     installed = tmp_path / ".local" / "bin" / "awake"
     assert installed.read_text() == LINUX.read_text() and os.access(installed, os.X_OK)
     assert bashrc.read_text().count("# added by awake") == 1
+    (tmp_path / "awake-lid.conf").write_text("[Login]\n")   # a lid setting from 'awake clamshell' stays
     r = run([installed, "uninstall", "-y"], tmp_path, env={"PATH": path})
     assert r.returncode == 0, r.stdout + r.stderr
+    assert "keep your lid setting" in r.stdout and (tmp_path / "awake-lid.conf").exists()
     assert not installed.exists() and not (tmp_path / ".awake").exists()
     assert bashrc.read_text().strip() == "export FOO=1"
 
@@ -249,10 +256,216 @@ def test_mac_clamshell_bad_argument(tmp_path):
     assert r.returncode == 1 and "usage: awake clamshell" in r.stdout
 
 
+LID_FILE = "[Login]\nHandleLidSwitchExternalPower=lock\nHandleLidSwitchDocked=ignore\n"
+
+
+def fake_logind(tmp_path, lid=True, closed=False, ac=True, docked=False, bat="suspend", ext="", dock="ignore",
+                logind=True, lock=None):
+    """A stand-in busctl (logind + UPower answers) and a sudo that only logs, both first on PATH.
+    lock: (what, who, why, uid, pid) of one more inhibitor lock. logind=False: logind doesn't answer."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir(exist_ok=True)
+    calls = tmp_path / "calls.log"
+    b = lambda v: "true" if v else "false"
+    locks = '["sleep","UPower","x","delay",0,1]'
+    if lock:
+        what, who, why, uid, pid = lock
+        locks += f',["{what}","{who}","{why}","block",{uid},{pid}]'
+    say = (lambda line: line) if logind else (lambda line: "exit 1")
+    q = '"'   # built outside the f-string below: Python < 3.12 allows no backslash inside {...}
+    s_bat, s_ext, s_dock = (say(f"echo 's {q}{v}{q}'") for v in (bat, ext, dock))
+    (fake / "busctl").write_text(f"""#!/bin/sh
+case "$*" in
+  *ListInhibitors*) echo '{{"type":"a(ssssuu)","data":[[{locks}]]}}';;
+  *LidIsPresent) echo "b {b(lid)}";;
+  *LidClosed) {say(f'echo "b {b(closed)}"')};;
+  *OnExternalPower) {say(f'echo "b {b(ac)}"')};;
+  *" Docked") {say(f'echo "b {b(docked)}"')};;
+  *HandleLidSwitch) {s_bat};;
+  *HandleLidSwitchExternalPower) {s_ext};;
+  *HandleLidSwitchDocked) {s_dock};;
+  *) exit 1;;
+esac
+""")
+    (fake / "sudo").write_text(f'#!/bin/sh\necho "sudo $*" >> "{calls}"\nexit 1\n')
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    return {"PATH": f"{fake}:{os.environ['PATH']}"}, calls
+
+
+def printed_commands(out):
+    """The indented command lines awake prints for you to run."""
+    return [ln.strip() for ln in out.splitlines() if re.match(r"  (sudo|printf) ", ln)]
+
+
 @linux_only
-def test_linux_clamshell_is_mac_only(tmp_path):
-    r = run([LINUX, "clamshell"], tmp_path)
-    assert "macOS-only" in r.stdout
+def test_linux_clamshell_no_lid(tmp_path):
+    env, calls = fake_logind(tmp_path, lid=False)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "lid:" in r.stdout and "doesn't report a lid" in r.stdout and "sudo" not in r.stdout
+    assert not calls.exists()
+
+
+@linux_only
+def test_linux_clamshell_prints_working_commands_and_never_runs_sudo(tmp_path):
+    env, calls = fake_logind(tmp_path)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "closing the lid right now:" in r.stdout and "suspend (plugged in)" in r.stdout
+    assert "Closing the lid while plugged in does: suspend." in r.stdout
+    cmds = printed_commands(r.stdout)
+    assert cmds[-2] == "sudo systemctl reload systemd-logind"
+    # Pasted as one block, every printed line must be valid shell (no stray notes on a command line) ...
+    assert subprocess.run(["bash", "-n"], input="\n".join(cmds), text=True).returncode == 0
+    # ... and the printf must write exactly the drop-in we mean.
+    printf = next(c for c in cmds if c.startswith("printf "))
+    assert printf.endswith("| sudo tee " + str(tmp_path / "awake-lid.conf"))
+    out = subprocess.run(["bash", "-c", printf.split(" | ")[0]], capture_output=True, text=True).stdout
+    assert out == LID_FILE
+    assert not calls.exists()   # printed for you to run, never run
+    assert not (tmp_path / "awake-lid.conf").exists()
+
+
+@linux_only
+@pytest.mark.parametrize("bat,ext,expect", [("suspend", "lock", "won't suspend this PC while it's plugged in"),
+                                            ("ignore", "", "plugged in or on battery")])
+def test_linux_clamshell_lid_already_kept_running(tmp_path, bat, ext, expect):
+    env, _ = fake_logind(tmp_path, bat=bat, ext=ext)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert expect in r.stdout and "To undo" not in r.stdout and "sudo" not in r.stdout
+    (tmp_path / "awake-lid.conf").write_text(LID_FILE)   # awake's own setting: offer the undo
+    out = run([LINUX, "clamshell"], tmp_path, env=env).stdout
+    assert printed_commands(out) == ["sudo rm " + str(tmp_path / "awake-lid.conf") + " && sudo systemctl reload systemd-logind"]
+
+
+@linux_only
+def test_linux_clamshell_file_not_in_effect(tmp_path):
+    env, _ = fake_logind(tmp_path)   # logind still says suspend
+    (tmp_path / "awake-lid.conf").write_text(LID_FILE)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert "exists but isn't in effect" in r.stdout and "sudo tee" not in r.stdout
+    assert "sudo systemctl reload systemd-logind" in printed_commands(r.stdout)
+
+
+@linux_only
+def test_linux_clamshell_on_battery_lid_closed(tmp_path):
+    env, _ = fake_logind(tmp_path, ac=False, closed=True)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert re.search(r"power:\s+battery\n", r.stdout) and re.search(r"lid:\s+closed\n", r.stdout)
+    assert re.search(r"right now:\s+suspend \(on battery\)", r.stdout)
+
+
+@linux_only
+def test_linux_clamshell_docked(tmp_path):
+    env, _ = fake_logind(tmp_path, ac=False, docked=True)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert "ignore (2+ displays or docked)" in r.stdout
+    env, _ = fake_logind(tmp_path, ext="lock", dock="suspend")
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert "with 2+ displays or docked does: suspend" in r.stdout and "while plugged in does" not in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_logind_silent(tmp_path):
+    env, _ = fake_logind(tmp_path, logind=False)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert r.returncode == 0 and "Couldn't read the lid settings" in r.stdout and "sudo" not in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_gnome_took_the_lid(tmp_path):
+    """GNOME's lock says your user name as "who": awake names the program from its process instead."""
+    gsd = tmp_path / "gsd-power"
+    gsd.symlink_to(shutil.which("sleep"))
+    proc = subprocess.Popen([str(gsd), "30"])
+    try:
+        user = pwd.getpwuid(os.getuid()).pw_name
+        env, _ = fake_logind(tmp_path, lock=("handle-lid-switch", user,
+                                             "External monitor attached or configuration changed recently",
+                                             os.getuid(), proc.pid))
+        r = run([LINUX, "clamshell"], tmp_path, env=env)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert "lid handled by:" in r.stdout and "gsd-power (External monitor attached" in r.stdout
+    assert "gsd-power is handling the lid" in r.stdout and f"{user} is handling" not in r.stdout
+    assert "sudo tee" not in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_kde_took_the_lid(tmp_path):
+    """A real program name in "who" is kept as is (/proc/PID/comm would cut it to 15 characters)."""
+    proc = subprocess.Popen([shutil.which("sleep"), "30"])
+    try:
+        env, _ = fake_logind(tmp_path, lock=("handle-power-key:handle-lid-switch", "org_kde_powerdevil",
+                                             "KDE handles power events", os.getuid(), proc.pid))
+        r = run([LINUX, "clamshell"], tmp_path, env=env)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert "org_kde_powerdevil is handling the lid" in r.stdout and "sudo tee" not in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_counts_another_users_lid_lock(tmp_path):
+    # logind obeys a lock from a process outside any login session (e.g. a user service), whoever owns
+    # it; it only skips locks from inactive sessions. (No such process here: it counts.)
+    env, _ = fake_logind(tmp_path, lock=("handle-lid-switch", "PowerDevil", "x", os.getuid() + 1, 2 ** 31 - 1))
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert "PowerDevil is handling the lid" in r.stdout and "sudo tee" not in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_unknown_power_source(tmp_path):
+    env, _ = fake_logind(tmp_path, ext="lock")
+    fake = Path(env["PATH"].split(":")[0]) / "busctl"
+    fake.write_text(fake.read_text().replace('*OnExternalPower) echo "b true";;', "*OnExternalPower) exit 1;;"))
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert re.search(r"power:\s+unknown\n", r.stdout)
+    assert "lock if plugged in, suspend on battery (power source unknown)" in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_bad_argument(tmp_path):
+    r = run([LINUX, "clamshell", "on"], tmp_path)
+    assert r.returncode == 1 and "usage: awake clamshell" in r.stdout
+
+
+@linux_only
+def test_linux_status_reminds_about_the_lid_setting(tmp_path):
+    env, _ = fake_logind(tmp_path, ext="lock")
+    assert "clamshell:" not in run([LINUX, "status"], tmp_path, env=env).stdout
+    (tmp_path / "awake-lid.conf").write_text(LID_FILE)
+    r = run([LINUX, "status"], tmp_path, env=env)
+    assert r.returncode == 0 and "clamshell: closing the lid won't suspend" in r.stdout
+    env, _ = fake_logind(tmp_path)   # file there, but logind still suspends
+    r = run([LINUX, "status"], tmp_path, env=env)
+    assert r.returncode == 0 and "isn't in effect (plugged in, the lid still does: suspend)" in r.stdout
+
+
+@linux_only
+def test_linux_all_off_without_agent(tmp_path):
+    r = run([LINUX, "all", "off"], tmp_path)
+    assert r.returncode == 0
+    assert "nothing to stop (it was never installed" in r.stdout
+    assert r.stdout.strip().endswith("awake all: everything is off")
+
+
+@linux_only
+def test_linux_all_off_says_so_when_busy(tmp_path):
+    (tmp_path / ".awake" / "lock").mkdir(parents=True)   # another awake command holds the lock
+    r = run([LINUX, "all", "off"], tmp_path)
+    assert r.returncode == 1 and "busy" in r.stdout
+    assert "everything is off" not in r.stdout and "not everything could be turned off" in r.stdout
+
+
+@linux_only
+@pytest.mark.parametrize("args", [["jiggle", "bogus"], ["jiggle", "random", "bogus"], ["all", "random", "bogus"]])
+def test_linux_bad_jiggle_arguments_print_usage(tmp_path, args):
+    r = run([LINUX] + args, tmp_path)
+    assert r.returncode == 1 and "usage: awake" in r.stdout and "[simple|random]" in r.stdout
+    assert not (tmp_path / ".awake" / "jiggle.pid").exists()
 
 
 def fake_vdisplay(tmp_path, status_rc=0):

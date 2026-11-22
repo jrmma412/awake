@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # awake - keep your Linux PC awake with the screen on (the Linux version of awake for macOS).
 # Run `awake help` for usage.
-VERSION=1.11.0
+VERSION=1.12.0
 D=$HOME/.awake
 PIDF=$D/pid; UNTIL=$D/until; HELD=$D/held; ERRF=$D/err
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
@@ -12,6 +12,7 @@ CONF=${XDG_CONFIG_HOME:-$HOME/.config}
 COSMIC_IDLE=$CONF/cosmic/com.system76.CosmicIdle/v1
 AGENT_UNIT=awake-agent.service
 AGENT_UNIT_FILE=$CONF/systemd/user/$AGENT_UNIT
+LID_CONF=${AWAKE_LID_CONF:-/etc/systemd/logind.conf.d/awake-lid.conf}   # the override is for the tests
 mkdir -p "$D" && chmod 700 "$D"
 
 usage() {
@@ -36,6 +37,9 @@ awake - keep your Linux PC awake with the screen on
   awake agent        (optional) always-on mode for servers/agents: the system never suspends while
                      plugged in, also after restarts, but the screen turns off and locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
+  awake clamshell    will closing the lid suspend this laptop? Shows the lid settings, and prints the
+                     command to keep it running with the lid closed while plugged in (and to undo it).
+                     Only reads; you run the printed sudo command yourself
   awake all [time]   everything at once: keep awake + mouse jiggle + agent mode (agent mode has no timer;
                      it stays until "awake all off" or "awake agent off"). "awake all off" stops all three
   awake uninstall    remove awake  (-y skips the question)
@@ -43,6 +47,7 @@ awake - keep your Linux PC awake with the screen on
 
 Mix and match (each part is its own switch):
   awake all (or: all on)       keep awake + jiggle + agent mode, until you turn them off
+  awake all random [time]      the same with random jiggle (also: all on random, all simple)
   awake all until 5pm          the same, keep-awake and jiggle stop at 5pm (agent mode has no timer)
   awake on jiggle 8h           keep awake + jiggle in one command, no agent (awake on jiggle until 5pm too)
   awake agent && awake jiggle  agent + jiggle
@@ -213,6 +218,15 @@ show_status() {
     echo "OFF"
   fi
   jiggle_running && jiggle_status
+  # Easy to forget once set: mention the lid setting 'awake clamshell' told you how to make,
+  # and whether logind is really using it.
+  if [[ -f $LID_CONF ]]; then
+    local ac; ac=$(lid_on_ac)
+    if keeps_running "$ac"; then echo "clamshell: closing the lid won't suspend this PC while plugged in ($LID_CONF); see 'awake clamshell'"
+    elif [[ -n $ac ]]; then echo "clamshell: $LID_CONF exists but isn't in effect (plugged in, the lid still does: $ac); see 'awake clamshell'"
+    else echo "clamshell: awake's lid setting is installed ($LID_CONF); see 'awake clamshell'"; fi
+  fi
+  return 0
 }
 
 # ---- optional mouse jiggle, started with: awake jiggle [time] ----
@@ -417,6 +431,131 @@ UNIT
   fi
 }
 
+# ---- awake clamshell: what closing the lid does, and the command to change it ----
+# Read-only, like the macOS version: awake never runs sudo, it prints the commands for you to run.
+# systemd-logind acts on the lid (HandleLidSwitch* in logind.conf) and, by default, ignores sleep locks
+# while doing so (LidSwitchIgnoreInhibited=yes), so 'awake' and 'awake agent' can't stop lid suspend.
+# A program can take the lid over from logind with a handle-lid-switch lock (KDE's PowerDevil does;
+# GNOME's gsd-power does while an external monitor is attached); then that program decides.
+
+# A D-Bus property's value via busctl, without its type and quotes (empty if it can't be read).
+# --auto-start=no: only ask services that are already running, so reading never starts one.
+bprop() {  # bprop SERVICE PATH INTERFACE PROPERTY
+  busctl --timeout=3 --auto-start=no get-property "$@" 2>/dev/null | sed -E 's/^[a-z]+ //; s/^"(.*)"$/\1/'
+}
+login_prop() { bprop org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager "$1"; }
+upower_prop() { bprop org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower "$1"; }
+lid_state() {   # closed / open / none
+  local p f
+  p=$(upower_prop LidIsPresent)
+  if [[ -z $p ]]; then   # no UPower: look for an ACPI lid button instead
+    for f in /proc/acpi/button/lid/*/state; do [[ -r $f ]] && p=true; done
+  fi
+  [[ $p == true ]] || { echo none; return; }
+  if [[ $(login_prop LidClosed) == true ]]; then echo closed; else echo open; fi
+}
+power_src() {   # plugged in / battery / unknown
+  local v; v=$(login_prop OnExternalPower)   # systemd 254+
+  [[ -n $v ]] || { v=$(upower_prop OnBattery); case $v in true) v=false;; false) v=true;; esac; }
+  case $v in true) echo "plugged in";; false) echo battery;; *) echo unknown;; esac
+}
+# The program holding a handle-lid-switch lock that logind obeys, as "name (its reason)"; empty if none.
+# logind skips such a lock only when its process is in a login session that isn't active (another user
+# switched away, the login screen); a process outside any session (a user service) always counts.
+# GNOME gives your user name as the lock's "who", so then the program is named from its process.
+lid_taker() {
+  busctl --timeout=3 --auto-start=no --json=short call org.freedesktop.login1 /org/freedesktop/login1 \
+      org.freedesktop.login1.Manager ListInhibitors 2>/dev/null | python3 -I -c '
+import json, pwd, re, subprocess, sys
+def obeyed(pid):
+    try:
+        with open("/proc/%d/cgroup" % pid) as f: m = re.search(r"/session-([^/.]+)[.]scope", f.read())
+    except OSError: return True
+    if not m: return True
+    try: r = subprocess.run(["loginctl", "show-session", m.group(1), "-p", "Active", "--value"],
+                            capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception: return True
+    return r != "no"
+try: rows = json.load(sys.stdin)["data"][0]
+except Exception: sys.exit()
+for what, who, why, mode, uid, pid in rows:
+    if "handle-lid-switch" not in what.split(":") or mode != "block" or not obeyed(pid): continue
+    try: user = pwd.getpwuid(uid).pw_name
+    except KeyError: user = None
+    if who == user:
+        try:
+            with open("/proc/%d/comm" % pid) as f: who = f.read().strip() or who
+        except OSError: pass
+    why = " ".join(why.split())
+    print("%s (%s)" % (who, why) if why else who); break
+' 2>/dev/null
+}
+keeps_running() { [[ $1 == ignore || $1 == lock ]]; }   # logind lid actions that don't suspend or power off
+# What closing the lid does while plugged in, with logind's current settings (empty if unknown).
+lid_on_ac() { local v; v=$(login_prop HandleLidSwitchExternalPower); [[ -n $v ]] || v=$(login_prop HandleLidSwitch); echo "$v"; }
+clamshell() {
+  case ${1:-status} in status) ;; *) echo "usage: awake clamshell [status]"; return 1;; esac
+  local lid src bat ext dock now who
+  lid=$(lid_state); src=$(power_src)
+  echo "clamshell (lid closed) status:"
+  printf "  %-34s %s\n" "power:" "$src" "lid:" "$lid"
+  if [[ $lid == none ]]; then
+    echo
+    echo "This PC doesn't report a lid (a desktop or a virtual machine), so there's nothing to change."
+    return 0
+  fi
+  who=$(lid_taker)
+  bat=$(login_prop HandleLidSwitch); ext=$(login_prop HandleLidSwitchExternalPower); dock=$(login_prop HandleLidSwitchDocked)
+  [[ -n $ext ]] || ext=$bat   # empty means "the same as on battery"
+  if [[ -z $bat ]]; then
+    printf "  %-34s %s\n" "closing the lid:" "unknown (systemd-logind didn't answer)"
+  else
+    # What logind does right now: docked or 2+ displays comes first, then plugged in, then battery.
+    if [[ $(login_prop Docked) == true ]]; then now="$dock (2+ displays or docked)"
+    elif [[ $src == "plugged in" ]]; then now="$ext (plugged in)"
+    elif [[ $src == battery ]]; then now="$bat (on battery)"
+    else now="$ext if plugged in, $bat on battery (power source unknown)"; fi
+    printf "  %-34s %s\n" "closing the lid right now:" "$now" "  on battery:" "$bat" "  plugged in:" "$ext" \
+      "  with 2+ displays or docked:" "$dock"
+  fi
+  [[ -n $who ]] && printf "  %-34s %s\n" "lid handled by:" "$who"
+  echo
+  if [[ -n $who ]]; then
+    echo "${who%% (*} is handling the lid instead of systemd-logind right now, so it decides what closing"
+    echo "the lid does, not the values above. Check that desktop's power settings."
+  elif [[ -z $bat ]]; then
+    echo "Couldn't read the lid settings. They are HandleLidSwitch* in /etc/systemd/logind.conf (man logind.conf)."
+  elif keeps_running "$ext" && keeps_running "$dock"; then
+    if keeps_running "$bat"; then echo "Closing the lid won't suspend this PC, plugged in or on battery."
+    else echo "Closing the lid won't suspend this PC while it's plugged in or has 2+ displays. Otherwise (on battery): $bat."; fi
+    if [[ -f $LID_CONF ]]; then
+      echo "awake's lid setting is $LID_CONF. To undo it (asks for your password;"
+      echo "if the reload fails, restart the PC):"
+      echo "  sudo rm $LID_CONF && sudo systemctl reload systemd-logind"
+    fi
+  else
+    keeps_running "$ext" || echo "Closing the lid while plugged in does: $ext."
+    keeps_running "$dock" || echo "Closing the lid with 2+ displays or docked does: $dock."
+    echo "'awake' and 'awake agent' can't stop that."
+    if [[ -f $LID_CONF ]]; then
+      echo "awake's lid setting $LID_CONF exists but isn't in effect yet."
+      echo "Reload logind (asks for your password; if that fails, restart the PC). If it's still not in effect,"
+      echo "another file in ${LID_CONF%/*} or /etc/systemd/logind.conf overrides it:"
+      echo "  sudo systemctl reload systemd-logind"
+      echo "To remove it:"
+      echo "  sudo rm $LID_CONF && sudo systemctl reload systemd-logind"
+    else
+      echo "To keep it running with the lid closed while plugged in, run these (asks for your password). The lid"
+      echo "then locks the screen instead; on battery it still does: $bat. If the reload fails, restart the PC."
+      echo "  sudo mkdir -p ${LID_CONF%/*}"
+      echo "  printf '[Login]\\nHandleLidSwitchExternalPower=lock\\nHandleLidSwitchDocked=ignore\\n' | sudo tee $LID_CONF"
+      echo "  sudo systemctl reload systemd-logind"
+      echo "To undo:"
+      echo "  sudo rm $LID_CONF && sudo systemctl reload systemd-logind"
+    fi
+  fi
+}
+
 # ---- awake all [time|off]: awake on + jiggle + agent mode in one go ----
 # Each part is still its own command (awake on / awake jiggle / awake agent), so any one can be
 # switched off alone. A part that cannot start (e.g. no virtual mouse permission for jiggle) is
@@ -427,9 +566,12 @@ all() {
   case ${1:-} in random|simple|normal) jmode=$1; shift;; esac
   local arg=${1:-} secs=""
   if [[ $arg == off || $arg == stop ]]; then
-    turn_off; jiggle_off
-    if agent_installed; then agent_off; else echo "awake: agent mode is not installed"; fi
-    return 0
+    local rc=0
+    turn_off || rc=1; jiggle_off || rc=1
+    if agent_installed; then agent_off || rc=1; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
+    if (( rc )); then echo "awake all: not everything could be turned off (see above); try 'awake all off' again"
+    else echo "awake all: everything is off"; fi
+    return $rc
   fi
   if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [simple|random] [time|off]"; return 1; }; fi
   local rc=0 jg=" + jiggle"
@@ -453,6 +595,7 @@ uninstall() {
   jiggle_running && echo "  - stop the mouse jiggle"
   [[ -f $AGENT_SAVED ]] && echo "  - remove agent mode and put back your suspend setting ($(fmt_suspend "$(<"$AGENT_SAVED")"))"
   [[ -f $AGENT_UNIT_FILE ]] && echo "  - remove agent mode (the always-on systemd user service)"
+  [[ -f $LID_CONF ]] && echo "  - keep your lid setting $LID_CONF (remove it with: sudo rm $LID_CONF && sudo systemctl reload systemd-logind)"
   echo "  - delete $self"
   echo "  - remove any PATH line awake added to ~/.bashrc / ~/.zshrc / ~/.profile"
   echo "  - delete ~/.awake (awake's state folder)"
@@ -754,7 +897,7 @@ case $1 in
   status|st)  show_status;;
   menubar)    echo "awake: the menu bar icon is macOS-only for now; on Linux use the awake command";;
   display)    echo "awake: the virtual display add-on (vdisplay) is macOS-only for now";;
-  clamshell)  echo "awake: clamshell is macOS-only. On Linux, what closing the lid does is set by HandleLidSwitch in /etc/systemd/logind.conf";;
+  clamshell)  clamshell "${2:-}";;
   agent)      agent "${2:-on}";;
   jiggle)     shift; jiggle "$@";;
   all)        shift; all "$@";;
