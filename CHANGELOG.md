@@ -30,9 +30,11 @@ to the macOS script apart from its version number.
 - The Linux lid command only covers "plugged in" and "with 2+ displays". On battery the
   lid still suspends, so a laptop in a bag doesn't run flat. Plugged in, the lid locks the
   screen (`lock`) rather than doing nothing (`ignore`).
-- The program holding a lid lock is named from its process (`/proc/PID/comm`), because GNOME
-  puts the user's name in the lock's "who". Only your own and system locks count; logind ignores
-  locks from other sessions such as the login screen.
+- Which lid locks count follows logind's rule: a lock is skipped only when its process is in a
+  login session that isn't active (checked with `loginctl show-session N -p Active`). A process
+  outside any session, such as a desktop's user service, always counts, whoever owns it. When the
+  lock's "who" is just the user's name (GNOME does this), the program is named from
+  `/proc/PID/comm` instead.
 - `awake display` stays macOS-only: vdisplay is a macOS tool. The SwiftBar auto-open (1.9.0)
   doesn't apply, since Linux has no menu bar icon.
 
@@ -45,13 +47,22 @@ to the macOS script apart from its version number.
   - `all off` always said "everything is off".
   - A test read the real `/etc`, so it failed on a laptop that already has the setting.
   - Reading UPower could start the service.
+- A second review round fixed:
+  - The tests needed Python 3.12. A backslash inside an f-string expression meant the file
+    wouldn't even load on 3.9 to 3.11, which took the macOS tests down too. Checked: it now
+    compiles on Python 3.9.
+  - The lock filter went by user id instead of logind's session rule.
+  - KDE's name was cut to 15 characters.
+  - An unknown power source was shown as "on battery".
+  - The battery/lid-closed test could pass with the feature broken.
 
 ### Testing status
-- pytest on Linux: 59 passed, 15 skipped (macOS-only). New tests:
+- pytest on Linux: 60 passed, 15 skipped (macOS-only). New tests:
   - clamshell with a fake `busctl`: no lid; lid suspends, where the printed commands must parse as
     bash and the printf must write exactly the intended file; already kept running; file present
-    but not in effect; battery with the lid closed; docked; logind not answering; GNOME, using a
-    real process named `gsd-power`; KDE; another user's lock ignored; bad argument; never calls sudo
+    but not in effect; battery with the lid closed; docked; unknown power source; logind not
+    answering; GNOME, using a real process named `gsd-power`; KDE's full name kept; another user's
+    lock from outside a session counts; bad argument; never calls sudo
   - the status reminder and exit code
   - the uninstall note
   - `all off` without agent mode, and while busy

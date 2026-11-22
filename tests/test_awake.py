@@ -2,6 +2,7 @@
 Linux tests run on Linux, macOS tests on macOS (CI runs both)."""
 import ast
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -271,6 +272,8 @@ def fake_logind(tmp_path, lid=True, closed=False, ac=True, docked=False, bat="su
         what, who, why, uid, pid = lock
         locks += f',["{what}","{who}","{why}","block",{uid},{pid}]'
     say = (lambda line: line) if logind else (lambda line: "exit 1")
+    q = '"'   # built outside the f-string below: Python < 3.12 allows no backslash inside {...}
+    s_bat, s_ext, s_dock = (say(f"echo 's {q}{v}{q}'") for v in (bat, ext, dock))
     (fake / "busctl").write_text(f"""#!/bin/sh
 case "$*" in
   *ListInhibitors*) echo '{{"type":"a(ssssuu)","data":[[{locks}]]}}';;
@@ -278,9 +281,9 @@ case "$*" in
   *LidClosed) {say(f'echo "b {b(closed)}"')};;
   *OnExternalPower) {say(f'echo "b {b(ac)}"')};;
   *" Docked") {say(f'echo "b {b(docked)}"')};;
-  *HandleLidSwitch) {say(f"echo 's \"{bat}\"'")};;
-  *HandleLidSwitchExternalPower) {say(f"echo 's \"{ext}\"'")};;
-  *HandleLidSwitchDocked) {say(f"echo 's \"{dock}\"'")};;
+  *HandleLidSwitch) {s_bat};;
+  *HandleLidSwitchExternalPower) {s_ext};;
+  *HandleLidSwitchDocked) {s_dock};;
   *) exit 1;;
 esac
 """)
@@ -349,8 +352,8 @@ def test_linux_clamshell_file_not_in_effect(tmp_path):
 def test_linux_clamshell_on_battery_lid_closed(tmp_path):
     env, _ = fake_logind(tmp_path, ac=False, closed=True)
     r = run([LINUX, "clamshell"], tmp_path, env=env)
-    assert "power:" in r.stdout and "battery" in r.stdout and "closed" in r.stdout
-    assert "suspend (on battery)" in r.stdout
+    assert re.search(r"power:\s+battery\n", r.stdout) and re.search(r"lid:\s+closed\n", r.stdout)
+    assert re.search(r"right now:\s+suspend \(on battery\)", r.stdout)
 
 
 @linux_only
@@ -377,31 +380,50 @@ def test_linux_clamshell_gnome_took_the_lid(tmp_path):
     gsd.symlink_to(shutil.which("sleep"))
     proc = subprocess.Popen([str(gsd), "30"])
     try:
-        env, _ = fake_logind(tmp_path, lock=("handle-lid-switch", "someuser",
+        user = pwd.getpwuid(os.getuid()).pw_name
+        env, _ = fake_logind(tmp_path, lock=("handle-lid-switch", user,
                                              "External monitor attached or configuration changed recently",
                                              os.getuid(), proc.pid))
         r = run([LINUX, "clamshell"], tmp_path, env=env)
     finally:
         proc.kill()
+        proc.wait()
     assert "lid handled by:" in r.stdout and "gsd-power (External monitor attached" in r.stdout
-    assert "gsd-power is handling the lid" in r.stdout and "someuser" not in r.stdout
+    assert "gsd-power is handling the lid" in r.stdout and f"{user} is handling" not in r.stdout
     assert "sudo tee" not in r.stdout
 
 
 @linux_only
 def test_linux_clamshell_kde_took_the_lid(tmp_path):
-    env, _ = fake_logind(tmp_path, lock=("handle-power-key:handle-lid-switch", "PowerDevil",
-                                         "KDE handles power events", os.getuid(), 2 ** 31 - 1))   # no such process
+    """A real program name in "who" is kept as is (/proc/PID/comm would cut it to 15 characters)."""
+    proc = subprocess.Popen([shutil.which("sleep"), "30"])
+    try:
+        env, _ = fake_logind(tmp_path, lock=("handle-power-key:handle-lid-switch", "org_kde_powerdevil",
+                                             "KDE handles power events", os.getuid(), proc.pid))
+        r = run([LINUX, "clamshell"], tmp_path, env=env)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert "org_kde_powerdevil is handling the lid" in r.stdout and "sudo tee" not in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_counts_another_users_lid_lock(tmp_path):
+    # logind obeys a lock from a process outside any login session (e.g. a user service), whoever owns
+    # it; it only skips locks from inactive sessions. (No such process here: it counts.)
+    env, _ = fake_logind(tmp_path, lock=("handle-lid-switch", "PowerDevil", "x", os.getuid() + 1, 2 ** 31 - 1))
     r = run([LINUX, "clamshell"], tmp_path, env=env)
     assert "PowerDevil is handling the lid" in r.stdout and "sudo tee" not in r.stdout
 
 
 @linux_only
-def test_linux_clamshell_ignores_other_users_lid_locks(tmp_path):
-    # e.g. the login screen's (gdm) lock: logind doesn't obey locks from inactive sessions
-    env, _ = fake_logind(tmp_path, lock=("handle-lid-switch", "gdm", "x", os.getuid() + 1, 2 ** 31 - 1))
+def test_linux_clamshell_unknown_power_source(tmp_path):
+    env, _ = fake_logind(tmp_path, ext="lock")
+    fake = Path(env["PATH"].split(":")[0]) / "busctl"
+    fake.write_text(fake.read_text().replace('*OnExternalPower) echo "b true";;', "*OnExternalPower) exit 1;;"))
     r = run([LINUX, "clamshell"], tmp_path, env=env)
-    assert "lid handled by" not in r.stdout and "sudo tee" in r.stdout
+    assert re.search(r"power:\s+unknown\n", r.stdout)
+    assert "lock if plugged in, suspend on battery (power source unknown)" in r.stdout
 
 
 @linux_only

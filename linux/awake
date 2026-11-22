@@ -459,22 +459,35 @@ power_src() {   # plugged in / battery / unknown
   [[ -n $v ]] || { v=$(upower_prop OnBattery); case $v in true) v=false;; false) v=true;; esac; }
   case $v in true) echo "plugged in";; false) echo battery;; *) echo unknown;; esac
 }
-# The program holding a handle-lid-switch lock that counts (yours or a system service's, not another
-# user's or the login screen's), as "name (its reason)"; empty if none. Named from its process,
-# since GNOME gives your user name as the lock's "who".
+# The program holding a handle-lid-switch lock that logind obeys, as "name (its reason)"; empty if none.
+# logind skips such a lock only when its process is in a login session that isn't active (another user
+# switched away, the login screen); a process outside any session (a user service) always counts.
+# GNOME gives your user name as the lock's "who", so then the program is named from its process.
 lid_taker() {
   busctl --timeout=3 --auto-start=no --json=short call org.freedesktop.login1 /org/freedesktop/login1 \
       org.freedesktop.login1.Manager ListInhibitors 2>/dev/null | python3 -I -c '
-import json, os, sys
+import json, pwd, re, subprocess, sys
+def obeyed(pid):
+    try:
+        with open("/proc/%d/cgroup" % pid) as f: m = re.search(r"/session-([^/.]+)[.]scope", f.read())
+    except OSError: return True
+    if not m: return True
+    try: r = subprocess.run(["loginctl", "show-session", m.group(1), "-p", "Active", "--value"],
+                            capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception: return True
+    return r != "no"
 try: rows = json.load(sys.stdin)["data"][0]
 except Exception: sys.exit()
 for what, who, why, mode, uid, pid in rows:
-    if "handle-lid-switch" in what.split(":") and mode == "block" and uid in (0, os.getuid()):
+    if "handle-lid-switch" not in what.split(":") or mode != "block" or not obeyed(pid): continue
+    try: user = pwd.getpwuid(uid).pw_name
+    except KeyError: user = None
+    if who == user:
         try:
             with open("/proc/%d/comm" % pid) as f: who = f.read().strip() or who
         except OSError: pass
-        why = " ".join(why.split())
-        print("%s (%s)" % (who, why) if why else who); break
+    why = " ".join(why.split())
+    print("%s (%s)" % (who, why) if why else who); break
 ' 2>/dev/null
 }
 keeps_running() { [[ $1 == ignore || $1 == lock ]]; }   # logind lid actions that don't suspend or power off
@@ -500,7 +513,8 @@ clamshell() {
     # What logind does right now: docked or 2+ displays comes first, then plugged in, then battery.
     if [[ $(login_prop Docked) == true ]]; then now="$dock (2+ displays or docked)"
     elif [[ $src == "plugged in" ]]; then now="$ext (plugged in)"
-    else now="$bat (on battery)"; fi
+    elif [[ $src == battery ]]; then now="$bat (on battery)"
+    else now="$ext if plugged in, $bat on battery (power source unknown)"; fi
     printf "  %-34s %s\n" "closing the lid right now:" "$now" "  on battery:" "$bat" "  plugged in:" "$ext" \
       "  with 2+ displays or docked:" "$dock"
   fi
