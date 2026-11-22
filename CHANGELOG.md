@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.12.0 (2026-11-22)
+
+Linux catch-up: the macOS changes from 1.9.0 to 1.11.0, ported to and tested on Linux. No change
+to the macOS script apart from its version number.
+
+### Added
+- Linux `awake clamshell` (was "macOS-only"): shows the power source, whether there is a lid and
+  whether it's closed, what closing it does on battery / plugged in / with another display
+  (logind's `HandleLidSwitch`, `HandleLidSwitchExternalPower`, `HandleLidSwitchDocked`), and which
+  program has taken the lid over from logind, if any (KDE PowerDevil, GNOME with an external
+  monitor). Prints the `sudo` commands to add `/etc/systemd/logind.conf.d/awake-lid.conf`
+  (`HandleLidSwitchExternalPower=lock`, `HandleLidSwitchDocked=ignore`) and to undo it. Only
+  reads (`busctl get-property`, `ListInhibitors`); never runs sudo. On a desktop it says there's no lid.
+- Linux `awake status` adds a reminder line while `awake-lid.conf` exists (as macOS does for
+  `pmset disablesleep`).
+
+### Changed
+- Linux `awake status` now always exits 0 (it exited 1 whenever jiggle was off; macOS was fixed in 1.11.0).
+- Linux `awake all off` matches macOS: says agent mode had nothing to stop when it was never
+  installed, and ends with `awake all: everything is off`.
+- Linux help lists `awake clamshell` and `awake all random [time]`.
+
+### Decisions
+- The Linux lid command only covers "plugged in" and "with another display". On battery the
+  lid still suspends, so a laptop in a bag doesn't run flat. Plugged in, the lid locks the
+  screen (`lock`) rather than doing nothing (`ignore`).
+- `awake display` stays macOS-only: vdisplay is a macOS tool. The SwiftBar auto-open (1.9.0)
+  doesn't apply, since Linux has no menu bar icon.
+
+### Testing status
+- pytest on Linux: 52 passed, 15 skipped (macOS-only). New tests: clamshell with a fake `busctl`
+  (no lid, lid suspends, already kept running, desktop took the lid, bad argument, never calls sudo),
+  the status reminder and exit code, `all off` without agent mode, and bad jiggle/all arguments.
+- Live on Pop!_OS 24.04, COSMIC (desktop PC, no lid): jiggle simple -> already-on hint -> random ->
+  bad argument (left running) -> simple 2m -> off; `all random 3m` (COSMIC suspend setting set to
+  never, then restored to 2h by `all off`); `all simple` while on; `all off` twice; `clamshell`
+  ("no lid"). Not tested on a real Linux laptop: the lid cases were checked with fake logind answers only.
+
 ## 1.11.0 (2026-11-14)
 
 ### Added

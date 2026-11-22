@@ -81,7 +81,8 @@ def test_linux_version_and_help(tmp_path):
 
 @linux_only
 def test_linux_status_off_and_unknown_command(tmp_path):
-    assert run([LINUX, "status"], tmp_path).stdout.strip() == "OFF"
+    r = run([LINUX, "status"], tmp_path)
+    assert r.stdout.strip() == "OFF" and r.returncode == 0   # 0 also when jiggle is off
     r = run([LINUX, "2x"], tmp_path)
     assert r.returncode == 1 and "unknown command or time" in r.stdout
     r = run([LINUX, "until", "5"], tmp_path)
@@ -249,10 +250,103 @@ def test_mac_clamshell_bad_argument(tmp_path):
     assert r.returncode == 1 and "usage: awake clamshell" in r.stdout
 
 
+def fake_logind(tmp_path, lid=True, closed=False, ac=True, bat="suspend", ext="", dock="ignore", taker=None):
+    """A stand-in busctl (logind + UPower answers) and a sudo that only logs, both first on PATH."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir(exist_ok=True)
+    calls = tmp_path / "calls.log"
+    b = lambda v: "true" if v else "false"
+    inhib = '["sleep","UPower","x","delay",0,1]'
+    if taker:
+        inhib += f',["handle-power-key:handle-lid-switch","{taker}","handles power events","block",1000,99]'
+    (fake / "busctl").write_text(f"""#!/bin/sh
+case "$*" in
+  *ListInhibitors*) echo '{{"type":"a(ssssuu)","data":[[{inhib}]]}}';;
+  *LidIsPresent) echo "b {b(lid)}";;
+  *LidClosed) echo "b {b(closed)}";;
+  *OnExternalPower) echo "b {b(ac)}";;
+  *HandleLidSwitch) echo 's "{bat}"';;
+  *HandleLidSwitchExternalPower) echo 's "{ext}"';;
+  *HandleLidSwitchDocked) echo 's "{dock}"';;
+  *) exit 1;;
+esac
+""")
+    (fake / "sudo").write_text(f'#!/bin/sh\necho "sudo $*" >> "{calls}"\nexit 1\n')
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    env = {"PATH": f"{fake}:{os.environ['PATH']}", "AWAKE_LID_CONF": str(tmp_path / "awake-lid.conf")}
+    return env, calls
+
+
 @linux_only
-def test_linux_clamshell_is_mac_only(tmp_path):
-    r = run([LINUX, "clamshell"], tmp_path)
-    assert "macOS-only" in r.stdout
+def test_linux_clamshell_no_lid(tmp_path):
+    env, calls = fake_logind(tmp_path, lid=False)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "lid:" in r.stdout and "doesn't report a lid" in r.stdout and "sudo" not in r.stdout
+    assert not calls.exists()
+
+
+@linux_only
+def test_linux_clamshell_prints_the_command_and_never_runs_sudo(tmp_path):
+    env, calls = fake_logind(tmp_path)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "closing the lid plugged in:" in r.stdout and "does: suspend" in r.stdout
+    assert "HandleLidSwitchExternalPower=lock" in r.stdout and "sudo systemctl reload systemd-logind" in r.stdout
+    assert not calls.exists()   # printed for you to run, never run
+    assert not (tmp_path / "awake-lid.conf").exists()
+
+
+@linux_only
+@pytest.mark.parametrize("bat,ext,expect", [("suspend", "lock", "won't suspend this PC while it's plugged in"),
+                                            ("ignore", "", "plugged in or on battery")])
+def test_linux_clamshell_lid_already_kept_running(tmp_path, bat, ext, expect):
+    env, _ = fake_logind(tmp_path, bat=bat, ext=ext)
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert expect in r.stdout and "To undo" not in r.stdout
+    (tmp_path / "awake-lid.conf").write_text("[Login]\n")   # awake's own setting: offer the undo
+    assert "sudo rm " + str(tmp_path / "awake-lid.conf") in run([LINUX, "clamshell"], tmp_path, env=env).stdout
+
+
+@linux_only
+def test_linux_clamshell_desktop_took_the_lid(tmp_path):
+    env, _ = fake_logind(tmp_path, taker="PowerDevil")
+    r = run([LINUX, "clamshell"], tmp_path, env=env)
+    assert "lid handled by:" in r.stdout and "PowerDevil has taken the lid over" in r.stdout
+    assert "sudo tee" not in r.stdout
+
+
+@linux_only
+def test_linux_clamshell_bad_argument(tmp_path):
+    r = run([LINUX, "clamshell", "on"], tmp_path)
+    assert r.returncode == 1 and "usage: awake clamshell" in r.stdout
+
+
+@linux_only
+def test_linux_status_reminds_about_the_lid_setting(tmp_path):
+    conf = tmp_path / "awake-lid.conf"
+    env = {"AWAKE_LID_CONF": str(conf)}
+    assert "clamshell:" not in run([LINUX, "status"], tmp_path, env=env).stdout
+    conf.write_text("[Login]\n")
+    r = run([LINUX, "status"], tmp_path, env=env)
+    assert r.returncode == 0 and "clamshell: closing the lid won't suspend" in r.stdout
+
+
+@linux_only
+def test_linux_all_off_without_agent(tmp_path):
+    r = run([LINUX, "all", "off"], tmp_path)
+    assert r.returncode == 0
+    assert "nothing to stop (it was never installed" in r.stdout
+    assert r.stdout.strip().endswith("awake all: everything is off")
+
+
+@linux_only
+@pytest.mark.parametrize("args", [["jiggle", "bogus"], ["jiggle", "random", "bogus"], ["all", "random", "bogus"]])
+def test_linux_bad_jiggle_arguments_print_usage(tmp_path, args):
+    r = run([LINUX] + args, tmp_path)
+    assert r.returncode == 1 and "usage: awake" in r.stdout and "[simple|random]" in r.stdout
+    assert not (tmp_path / ".awake" / "jiggle.pid").exists()
 
 
 def fake_vdisplay(tmp_path, status_rc=0):
