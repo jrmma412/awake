@@ -7,36 +7,63 @@ to the macOS script apart from its version number.
 
 ### Added
 - Linux `awake clamshell` (was "macOS-only"): shows the power source, whether there is a lid and
-  whether it's closed, what closing it does on battery / plugged in / with another display
-  (logind's `HandleLidSwitch`, `HandleLidSwitchExternalPower`, `HandleLidSwitchDocked`), and which
-  program has taken the lid over from logind, if any (KDE PowerDevil, GNOME with an external
-  monitor). Prints the `sudo` commands to add `/etc/systemd/logind.conf.d/awake-lid.conf`
-  (`HandleLidSwitchExternalPower=lock`, `HandleLidSwitchDocked=ignore`) and to undo it. Only
-  reads (`busctl get-property`, `ListInhibitors`); never runs sudo. On a desktop it says there's no lid.
+  whether it's closed, what closing it does right now and on battery / plugged in / with 2+ displays
+  or docked (logind's `HandleLidSwitch`, `HandleLidSwitchExternalPower`, `HandleLidSwitchDocked`
+  and `Docked`), and which program has taken the lid over from logind, if any (KDE's PowerDevil,
+  GNOME's gsd-power while an external monitor is attached). Prints the `sudo` commands to add
+  `/etc/systemd/logind.conf.d/awake-lid.conf` (`HandleLidSwitchExternalPower=lock`,
+  `HandleLidSwitchDocked=ignore`) and to undo it; if the file is there but logind isn't using it,
+  says so and prints the reload command instead. Only reads (`busctl get-property` with
+  `--auto-start=no`, `ListInhibitors`); never runs sudo. On a desktop PC it says there's no lid.
 - Linux `awake status` adds a reminder line while `awake-lid.conf` exists (as macOS does for
-  `pmset disablesleep`).
+  `pmset disablesleep`), and says when it exists but isn't in effect.
+- Linux `awake uninstall` lists the lid setting as something it keeps, with the command to remove it.
 
 ### Changed
 - Linux `awake status` now always exits 0 (it exited 1 whenever jiggle was off; macOS was fixed in 1.11.0).
 - Linux `awake all off` matches macOS: says agent mode had nothing to stop when it was never
-  installed, and ends with `awake all: everything is off`.
+  installed, and ends with `awake all: everything is off`. Unlike macOS, it only says that when
+  every part did stop; otherwise it says so and exits 1.
 - Linux help lists `awake clamshell` and `awake all random [time]`.
 
 ### Decisions
-- The Linux lid command only covers "plugged in" and "with another display". On battery the
+- The Linux lid command only covers "plugged in" and "with 2+ displays". On battery the
   lid still suspends, so a laptop in a bag doesn't run flat. Plugged in, the lid locks the
   screen (`lock`) rather than doing nothing (`ignore`).
+- The program holding a lid lock is named from its process (`/proc/PID/comm`), because GNOME
+  puts the user's name in the lock's "who". Only your own and system locks count; logind ignores
+  locks from other sessions such as the login screen.
 - `awake display` stays macOS-only: vdisplay is a macOS tool. The SwiftBar auto-open (1.9.0)
   doesn't apply, since Linux has no menu bar icon.
 
+### Review
+- Independent review before release. Fixed from it:
+  - The printed command block failed when pasted (a note on the reload line was a bash syntax
+    error), and `status` then claimed the lid setting was in effect.
+  - GNOME's lock showed the user's name instead of the program's.
+  - The docked / 2+ displays case was missing.
+  - `all off` always said "everything is off".
+  - A test read the real `/etc`, so it failed on a laptop that already has the setting.
+  - Reading UPower could start the service.
+
 ### Testing status
-- pytest on Linux: 52 passed, 15 skipped (macOS-only). New tests: clamshell with a fake `busctl`
-  (no lid, lid suspends, already kept running, desktop took the lid, bad argument, never calls sudo),
-  the status reminder and exit code, `all off` without agent mode, and bad jiggle/all arguments.
-- Live on Pop!_OS 24.04, COSMIC (desktop PC, no lid): jiggle simple -> already-on hint -> random ->
-  bad argument (left running) -> simple 2m -> off; `all random 3m` (COSMIC suspend setting set to
-  never, then restored to 2h by `all off`); `all simple` while on; `all off` twice; `clamshell`
-  ("no lid"). Not tested on a real Linux laptop: the lid cases were checked with fake logind answers only.
+- pytest on Linux: 59 passed, 15 skipped (macOS-only). New tests:
+  - clamshell with a fake `busctl`: no lid; lid suspends, where the printed commands must parse as
+    bash and the printf must write exactly the intended file; already kept running; file present
+    but not in effect; battery with the lid closed; docked; logind not answering; GNOME, using a
+    real process named `gsd-power`; KDE; another user's lock ignored; bad argument; never calls sudo
+  - the status reminder and exit code
+  - the uninstall note
+  - `all off` without agent mode, and while busy
+  - bad jiggle/all arguments
+- Live on Pop!_OS 24.04, COSMIC (desktop PC, no lid):
+  - jiggle: simple, then the already-on hint, random, a bad argument (left running), `simple 2m`, off
+  - `all random 3m`: COSMIC's suspend setting went to never, and `all off` restored it to 2h
+  - `all simple` while already on; `all off` twice; `clamshell` ("no lid")
+- Not tested on a real Linux laptop: the lid cases were checked only with fake logind/UPower answers.
+
+### Open
+- macOS `awake all off` still says "everything is off" even when a part failed (Linux fixed here).
 
 ## 1.11.0 (2026-11-14)
 

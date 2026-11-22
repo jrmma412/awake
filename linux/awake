@@ -218,8 +218,14 @@ show_status() {
     echo "OFF"
   fi
   jiggle_running && jiggle_status
-  # Easy to forget once set: mention the lid setting 'awake clamshell' told you how to make.
-  [[ -f $LID_CONF ]] && echo "clamshell: closing the lid won't suspend this PC while plugged in ($LID_CONF); see 'awake clamshell'"
+  # Easy to forget once set: mention the lid setting 'awake clamshell' told you how to make,
+  # and whether logind is really using it.
+  if [[ -f $LID_CONF ]]; then
+    local ac; ac=$(lid_on_ac)
+    if keeps_running "$ac"; then echo "clamshell: closing the lid won't suspend this PC while plugged in ($LID_CONF); see 'awake clamshell'"
+    elif [[ -n $ac ]]; then echo "clamshell: $LID_CONF exists but isn't in effect (plugged in, the lid still does: $ac); see 'awake clamshell'"
+    else echo "clamshell: awake's lid setting is installed ($LID_CONF); see 'awake clamshell'"; fi
+  fi
   return 0
 }
 
@@ -429,12 +435,13 @@ UNIT
 # Read-only, like the macOS version: awake never runs sudo, it prints the commands for you to run.
 # systemd-logind acts on the lid (HandleLidSwitch* in logind.conf) and, by default, ignores sleep locks
 # while doing so (LidSwitchIgnoreInhibited=yes), so 'awake' and 'awake agent' can't stop lid suspend.
-# A desktop can take the lid over from logind with an inhibitor (KDE does; GNOME does while an
-# external monitor is attached); then that desktop's own power settings decide.
+# A program can take the lid over from logind with a handle-lid-switch lock (KDE's PowerDevil does;
+# GNOME's gsd-power does while an external monitor is attached); then that program decides.
 
 # A D-Bus property's value via busctl, without its type and quotes (empty if it can't be read).
+# --auto-start=no: only ask services that are already running, so reading never starts one.
 bprop() {  # bprop SERVICE PATH INTERFACE PROPERTY
-  busctl --timeout=3 get-property "$@" 2>/dev/null | sed -E 's/^[a-z]+ //; s/^"(.*)"$/\1/'
+  busctl --timeout=3 --auto-start=no get-property "$@" 2>/dev/null | sed -E 's/^[a-z]+ //; s/^"(.*)"$/\1/'
 }
 login_prop() { bprop org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager "$1"; }
 upower_prop() { bprop org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower "$1"; }
@@ -452,54 +459,86 @@ power_src() {   # plugged in / battery / unknown
   [[ -n $v ]] || { v=$(upower_prop OnBattery); case $v in true) v=false;; false) v=true;; esac; }
   case $v in true) echo "plugged in";; false) echo battery;; *) echo unknown;; esac
 }
-# Whoever holds a handle-lid-switch lock has taken the lid over from logind (empty if nobody).
+# The program holding a handle-lid-switch lock that counts (yours or a system service's, not another
+# user's or the login screen's), as "name (its reason)"; empty if none. Named from its process,
+# since GNOME gives your user name as the lock's "who".
 lid_taker() {
-  busctl --timeout=3 --json=short call org.freedesktop.login1 /org/freedesktop/login1 \
-      org.freedesktop.login1.Manager ListInhibitors 2>/dev/null |
-    grep -oE '\["[a-z:-]*handle-lid-switch[a-z:-]*","[^"]*"' | head -1 | sed -E 's/.*,"([^"]*)"$/\1/'
+  busctl --timeout=3 --auto-start=no --json=short call org.freedesktop.login1 /org/freedesktop/login1 \
+      org.freedesktop.login1.Manager ListInhibitors 2>/dev/null | python3 -I -c '
+import json, os, sys
+try: rows = json.load(sys.stdin)["data"][0]
+except Exception: sys.exit()
+for what, who, why, mode, uid, pid in rows:
+    if "handle-lid-switch" in what.split(":") and mode == "block" and uid in (0, os.getuid()):
+        try:
+            with open("/proc/%d/comm" % pid) as f: who = f.read().strip() or who
+        except OSError: pass
+        why = " ".join(why.split())
+        print("%s (%s)" % (who, why) if why else who); break
+' 2>/dev/null
 }
-keeps_running() { [[ $1 == ignore || $1 == lock ]]; }   # logind actions that don't suspend or power off
+keeps_running() { [[ $1 == ignore || $1 == lock ]]; }   # logind lid actions that don't suspend or power off
+# What closing the lid does while plugged in, with logind's current settings (empty if unknown).
+lid_on_ac() { local v; v=$(login_prop HandleLidSwitchExternalPower); [[ -n $v ]] || v=$(login_prop HandleLidSwitch); echo "$v"; }
 clamshell() {
   case ${1:-status} in status) ;; *) echo "usage: awake clamshell [status]"; return 1;; esac
-  local lid src bat ext dock who act
-  lid=$(lid_state); src=$(power_src); who=$(lid_taker)
-  bat=$(login_prop HandleLidSwitch); ext=$(login_prop HandleLidSwitchExternalPower); dock=$(login_prop HandleLidSwitchDocked)
-  [[ -n $ext ]] || ext=$bat   # empty means "the same as on battery"
+  local lid src bat ext dock now who
+  lid=$(lid_state); src=$(power_src)
   echo "clamshell (lid closed) status:"
   printf "  %-34s %s\n" "power:" "$src" "lid:" "$lid"
-  if [[ $lid == none ]]; then :
-  elif [[ -n $bat ]]; then
-    printf "  %-34s %s\n" "closing the lid on battery:" "$bat" "closing the lid plugged in:" "$ext" \
-      "closing the lid with 2+ displays:" "${dock:-unknown}"
-  else
-    printf "  %-34s %s\n" "closing the lid:" "unknown (systemd-logind didn't answer)"
-  fi
-  [[ -n $who ]] && printf "  %-34s %s\n" "lid handled by:" "$who (instead of systemd-logind)"
-  echo
   if [[ $lid == none ]]; then
+    echo
     echo "This PC doesn't report a lid (a desktop or a virtual machine), so there's nothing to change."
-  elif [[ -n $who ]]; then
-    echo "$who has taken the lid over from systemd-logind, so its own power settings decide what"
-    echo "closing the lid does, not the values above. Change it in that desktop's power settings."
+    return 0
+  fi
+  who=$(lid_taker)
+  bat=$(login_prop HandleLidSwitch); ext=$(login_prop HandleLidSwitchExternalPower); dock=$(login_prop HandleLidSwitchDocked)
+  [[ -n $ext ]] || ext=$bat   # empty means "the same as on battery"
+  if [[ -z $bat ]]; then
+    printf "  %-34s %s\n" "closing the lid:" "unknown (systemd-logind didn't answer)"
+  else
+    # What logind does right now: docked or 2+ displays comes first, then plugged in, then battery.
+    if [[ $(login_prop Docked) == true ]]; then now="$dock (2+ displays or docked)"
+    elif [[ $src == "plugged in" ]]; then now="$ext (plugged in)"
+    else now="$bat (on battery)"; fi
+    printf "  %-34s %s\n" "closing the lid right now:" "$now" "  on battery:" "$bat" "  plugged in:" "$ext" \
+      "  with 2+ displays or docked:" "$dock"
+  fi
+  [[ -n $who ]] && printf "  %-34s %s\n" "lid handled by:" "$who"
+  echo
+  if [[ -n $who ]]; then
+    echo "${who%% (*} is handling the lid instead of systemd-logind right now, so it decides what closing"
+    echo "the lid does, not the values above. Check that desktop's power settings."
   elif [[ -z $bat ]]; then
     echo "Couldn't read the lid settings. They are HandleLidSwitch* in /etc/systemd/logind.conf (man logind.conf)."
-  elif keeps_running "$ext" && keeps_running "${dock:-ignore}"; then
+  elif keeps_running "$ext" && keeps_running "$dock"; then
     if keeps_running "$bat"; then echo "Closing the lid won't suspend this PC, plugged in or on battery."
-    else echo "Closing the lid won't suspend this PC while it's plugged in. On battery it will ($bat)."; fi
+    else echo "Closing the lid won't suspend this PC while it's plugged in or has 2+ displays. Otherwise (on battery): $bat."; fi
     if [[ -f $LID_CONF ]]; then
-      echo "That is awake's lid setting ($LID_CONF). To undo it (asks for your password):"
+      echo "awake's lid setting is $LID_CONF. To undo it (asks for your password;"
+      echo "if the reload fails, restart the PC):"
       echo "  sudo rm $LID_CONF && sudo systemctl reload systemd-logind"
     fi
   else
-    act=$ext; keeps_running "$act" && act=$dock
-    echo "Closing the lid while plugged in does: $act. 'awake' and 'awake agent' can't stop that."
-    echo "To keep it running with the lid closed while plugged in (asks for your password; closing the lid"
-    echo "then locks the screen instead, and on battery it still does: $bat):"
-    echo "  sudo mkdir -p ${LID_CONF%/*}"
-    echo "  printf '[Login]\\nHandleLidSwitchExternalPower=lock\\nHandleLidSwitchDocked=ignore\\n' | sudo tee $LID_CONF"
-    echo "  sudo systemctl reload systemd-logind      (if that fails, restart the PC)"
-    echo "To undo:"
-    echo "  sudo rm $LID_CONF && sudo systemctl reload systemd-logind"
+    keeps_running "$ext" || echo "Closing the lid while plugged in does: $ext."
+    keeps_running "$dock" || echo "Closing the lid with 2+ displays or docked does: $dock."
+    echo "'awake' and 'awake agent' can't stop that."
+    if [[ -f $LID_CONF ]]; then
+      echo "awake's lid setting $LID_CONF exists but isn't in effect yet."
+      echo "Reload logind (asks for your password; if that fails, restart the PC). If it's still not in effect,"
+      echo "another file in ${LID_CONF%/*} or /etc/systemd/logind.conf overrides it:"
+      echo "  sudo systemctl reload systemd-logind"
+      echo "To remove it:"
+      echo "  sudo rm $LID_CONF && sudo systemctl reload systemd-logind"
+    else
+      echo "To keep it running with the lid closed while plugged in, run these (asks for your password). The lid"
+      echo "then locks the screen instead; on battery it still does: $bat. If the reload fails, restart the PC."
+      echo "  sudo mkdir -p ${LID_CONF%/*}"
+      echo "  printf '[Login]\\nHandleLidSwitchExternalPower=lock\\nHandleLidSwitchDocked=ignore\\n' | sudo tee $LID_CONF"
+      echo "  sudo systemctl reload systemd-logind"
+      echo "To undo:"
+      echo "  sudo rm $LID_CONF && sudo systemctl reload systemd-logind"
+    fi
   fi
 }
 
@@ -513,10 +552,12 @@ all() {
   case ${1:-} in random|simple|normal) jmode=$1; shift;; esac
   local arg=${1:-} secs=""
   if [[ $arg == off || $arg == stop ]]; then
-    turn_off; jiggle_off
-    if agent_installed; then agent_off; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
-    echo "awake all: everything is off"
-    return 0
+    local rc=0
+    turn_off || rc=1; jiggle_off || rc=1
+    if agent_installed; then agent_off || rc=1; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
+    if (( rc )); then echo "awake all: not everything could be turned off (see above); try 'awake all off' again"
+    else echo "awake all: everything is off"; fi
+    return $rc
   fi
   if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [simple|random] [time|off]"; return 1; }; fi
   local rc=0 jg=" + jiggle"
@@ -540,6 +581,7 @@ uninstall() {
   jiggle_running && echo "  - stop the mouse jiggle"
   [[ -f $AGENT_SAVED ]] && echo "  - remove agent mode and put back your suspend setting ($(fmt_suspend "$(<"$AGENT_SAVED")"))"
   [[ -f $AGENT_UNIT_FILE ]] && echo "  - remove agent mode (the always-on systemd user service)"
+  [[ -f $LID_CONF ]] && echo "  - keep your lid setting $LID_CONF (remove it with: sudo rm $LID_CONF && sudo systemctl reload systemd-logind)"
   echo "  - delete $self"
   echo "  - remove any PATH line awake added to ~/.bashrc / ~/.zshrc / ~/.profile"
   echo "  - delete ~/.awake (awake's state folder)"

@@ -297,14 +297,14 @@ All the commands above work the same (`awake 2h`, `awake until 5pm`, `awake jigg
   (`awake-agent.service`) holding suspend-only requests; it starts at login
   (`sudo loginctl enable-linger $USER` to run with nobody logged in). On battery, normal
   suspend still applies on COSMIC.
-- **Lid closed (`awake clamshell`)** shows what closing the lid does on battery, plugged in and
-  with another display attached (systemd-logind's `HandleLidSwitch*` settings), and whether the
-  desktop has taken the lid over from logind (KDE does, GNOME while an external monitor is
-  attached). As on macOS, `awake` and `awake agent` can't stop lid suspend. It prints a `sudo`
-  command that adds `/etc/systemd/logind.conf.d/awake-lid.conf`, so that while plugged in closing
+- **Lid closed (`awake clamshell`)** shows what closing the lid does right now, on battery,
+  plugged in and with 2+ displays (systemd-logind's `HandleLidSwitch*` settings), and whether a
+  program has taken the lid over from logind (KDE does, GNOME while an external monitor is
+  attached). As on macOS, `awake` and `awake agent` can't stop lid suspend. It prints the `sudo`
+  commands that add `/etc/systemd/logind.conf.d/awake-lid.conf`, so that while plugged in closing
   the lid locks the screen instead of suspending (on battery it still suspends), plus the command
   to undo it. It only reads and never runs `sudo` itself. `awake status` mentions that file while
-  it exists. On a desktop PC it says there is no lid.
+  it exists, and says if logind isn't using it. On a desktop PC it says there is no lid.
 - **No menu bar icon or virtual display yet** (`awake menubar` and `awake display` are macOS-only).
 - **Security:** the same notes apply (no auto-lock while on; jiggle hides your idle time).
   `/dev/uinput` access lets any program you run create virtual input devices.
