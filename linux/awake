@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # awake - keep your Linux PC awake with the screen on (the Linux version of awake for macOS).
 # Run `awake help` for usage.
-VERSION=1.13.0
+VERSION=1.14.0
 D=$HOME/.awake
 PIDF=$D/pid; UNTIL=$D/until; HELD=$D/held; ERRF=$D/err
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
 AGENT_SAVED=$D/agent.saved
+ONBOOT=$D/on.boot   # keep-awake's end time (0 = until 'awake off') for after a restart; see save_boot
 JIGGLE_EVERY=30   # seconds of no mouse/keyboard activity before a jiggle
 SELF=$(realpath -s -- "$0" 2>/dev/null || echo "$0")   # absolute path, symlinks NOT resolved
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}
 COSMIC_IDLE=$CONF/cosmic/com.system76.CosmicIdle/v1
 AGENT_UNIT=awake-agent.service
 AGENT_UNIT_FILE=$CONF/systemd/user/$AGENT_UNIT
+ON_AUTOSTART=$CONF/autostart/awake-on.desktop
 LID_CONF=${AWAKE_LID_CONF:-/etc/systemd/logind.conf.d/awake-lid.conf}   # the override is for the tests
 VD_BOOT=${AWAKE_VD_BOOT:-/etc/modules-load.d/awake-vdisplay.conf}       # virtual display; these four
 VKMS=${AWAKE_VKMS:-/sys/module/vkms}                                     # overrides are for the tests too
@@ -24,7 +26,7 @@ usage() {
   cat <<'EOT'
 awake - keep your Linux PC awake with the screen on
 
-  awake              turn on until you turn it off
+  awake              turn on until you turn it off (it comes back after restarts too)
   awake 2h           turn on for a while (30m, 2h, 1h30m, 90, 45s)
   awake off          turn off (your normal screen-off, lock and sleep settings apply again)
   awake until 5pm    turn on until a clock time (5pm, 5:30pm, 17:30; tomorrow if already past).
@@ -188,29 +190,73 @@ unlock() { [[ -n $HAVE_LOCK ]] && rmdir "$D/lock" 2>/dev/null; HAVE_LOCK=; }
 # ---- keep awake: awake [on] [time] ----
 # Asks the desktop not to blank the screen, lock or suspend (the same request a video player makes),
 # plus a systemd sleep lock. Nothing is written to your settings: when the helper exits (off, timer,
-# crash or reboot) the desktop drops the request and your normal settings apply again.
+# crash, logout or restart) the desktop drops the request and your normal settings apply again.
+# To come back after a restart, 'awake on' also adds a login entry (XDG autostart, which COSMIC, GNOME,
+# KDE and most desktops run when you log in). It runs 'awake _resume', which turns keep-awake back on
+# unless its timer is over by then. 'awake off' removes it.
+save_boot() {  # save_boot END: fails if the login entry can't be written
+  local bin=$SELF
+  [[ $bin =~ ^[A-Za-z0-9_./-]+$ ]] || return 1   # it goes into the entry's Exec line
+  mkdir -p "${ON_AUTOSTART%/*}" 2>/dev/null &&
+    printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=awake' \
+      "Comment=Turns awake's keep-awake back on after a restart ('awake off' removes this)" \
+      "Exec=$bin _resume" 'Terminal=false' > "$ON_AUTOSTART.tmp" 2>/dev/null &&
+    mv -f "$ON_AUTOSTART.tmp" "$ON_AUTOSTART" && echo "$1" > "$ONBOOT"
+}
+clear_boot() { rm -f "$ONBOOT" "$ON_AUTOSTART" "$ON_AUTOSTART.tmp"; }
+boot_pending() {   # will keep-awake come back at the next login?
+  [[ -f $ONBOOT && -f $ON_AUTOSTART ]] || return 1
+  local e; e=$(<"$ONBOOT")
+  [[ $e =~ ^[0-9]+$ ]] && (( e == 0 || e > $(now) ))
+}
+boot_note() { echo "awake: note: it won't come back after a restart (awake could not add its login entry $ON_AUTOSTART)"; }
+
 turn_on() {
   local secs=$1 end=0
   need_py || return 1
   lock || return 1
-  if running; then echo "awake: already on"; unlock; return 0; fi
+  if running; then   # already on (maybe from before awake came back after restarts): now it does
+    local u; u=$(cat "$UNTIL" 2>/dev/null); [[ $u =~ ^[0-9]+$ ]] || u=0
+    save_boot "$u" || boot_note
+    echo "awake: already on"; unlock; return 0
+  fi
   rm -f "$PIDF" "$UNTIL" "$HELD"
   if [[ -n $secs ]]; then end=$(( $(now) + secs )); echo "$end" > "$UNTIL"; fi
   if ! spawn "$PIDF" hold display "$PIDF" "$UNTIL" "$end" "$ERRF" "$HELD"; then
     rm -f "$UNTIL"; unlock
     echo "awake: could not turn on: $(helper_error)"; return 1
   fi
+  local again=", also after restarts"
+  save_boot "$end" || { again=""; clear_boot; }
   unlock
   [[ $(cat "$HELD" 2>/dev/null) == *screen:* ]] ||
     echo "awake: note: this desktop did not accept a keep-screen-on request, so only system sleep is blocked; the screen may still turn off and lock"
-  if [[ -n $secs ]]; then echo "awake: ON for $(human "$secs") (screen kept on, no auto-lock or sleep)"
-  else echo "awake: ON until you run 'awake off' (screen kept on, no auto-lock or sleep)"; fi
+  [[ -n $again ]] || boot_note
+  if [[ -n $secs ]]; then echo "awake: ON for $(human "$secs") (screen kept on, no auto-lock or sleep${again})"
+  else echo "awake: ON until you run 'awake off' (screen kept on, no auto-lock or sleep${again})"; fi
+}
+
+# Run at login by the login entry. The helper runs in the foreground (exec, same pid), so however the
+# desktop starts login entries it can't end it early, and it waits up to a minute for the desktop's
+# screen-saver service, which may start after the login entries.
+resume() {
+  boot_pending || { clear_boot; return 0; }   # timer over (or no saved state): tidy up
+  need_py >/dev/null || return 1
+  lock || return 1
+  if running; then unlock; return 0; fi
+  local end; end=$(<"$ONBOOT")
+  rm -f "$PIDF" "$UNTIL" "$HELD" "$ERRF"
+  (( end > 0 )) && echo "$end" > "$UNTIL"
+  echo $$ > "$PIDF"   # 'awake off' and 'awake status' see it while it waits for the desktop
+  unlock
+  exec python3 -I -c "$(helper_py)" hold display "$PIDF" "$UNTIL" "$end" "$ERRF" "$HELD" 60 2>"$D/helper.log"
 }
 
 turn_off() {
   lock || return 1
   stop_proc "$PIDF" awake-hold
   rm -f "$UNTIL" "$HELD"
+  clear_boot
   unlock
   [[ -n $1 ]] || echo "awake: OFF (your normal screen-off, lock and sleep settings apply again)"
 }
@@ -223,7 +269,10 @@ show_status() {
       u=$(<"$UNTIL")
       [[ $u =~ ^[0-9]+$ ]] && (( u > $(now) )) && left=", $(human $(( u - $(now) ))) left (until $(clock "$u"))"
     fi
-    echo "ON${left} (screen kept on, no auto-lock or sleep)"
+    local again=""; boot_pending && again=", also after restarts"
+    echo "ON${left} (screen kept on, no auto-lock or sleep${again})"
+  elif boot_pending; then
+    echo "OFF (it turns back on at your next login; 'awake off' stops that)"
   else
     echo "OFF"
   fi
@@ -845,7 +894,7 @@ def fail(errf, msg):
     put(errf, msg); sys.exit(1)
 
 # ---- keep-awake requests ----
-def hold(kind, pidf, untilf, end, errf, heldf):
+def hold(kind, pidf, untilf, end, errf, heldf, wait=0):
     set_name('awake-hold' if pidf else 'awake-agent')
     import gi; gi.require_version('Gio', '2.0')
     from gi.repository import Gio, GLib
@@ -859,6 +908,18 @@ def hold(kind, pidf, untilf, end, errf, heldf):
         sess = Gio.bus_get_sync(Gio.BusType.SESSION); sess.set_exit_on_close(False)
     except GLib.Error:
         sess = None
+    if sess and wait:   # at login: give the desktop's screen-saver service time to start
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            try:
+                if any(sess.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                                      'NameHasOwner', GLib.Variant('(s)', (n,)), GLib.VariantType('(b)'),
+                                      Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+                       for n in ('org.freedesktop.ScreenSaver', 'org.gnome.SessionManager')):
+                    break
+            except GLib.Error:
+                break
+            time.sleep(1)
     if sess:
         if display:   # COSMIC, KDE, Xfce and others: no screen off, lock or idle suspend while held
             try:
@@ -1051,7 +1112,7 @@ def jiggle(pidf, untilf, every, end, mode, errf):
         m.close(); cleanup(pidf, untilf, pidf[:-4] + '.mode')
 
 cmd, a = sys.argv[1], sys.argv[2:]
-if cmd == 'hold': hold(a[0], a[1], a[2], float(a[3] or 0), a[4], a[5])
+if cmd == 'hold': hold(a[0], a[1], a[2], float(a[3] or 0), a[4], a[5], float(a[6]) if len(a) > 6 else 0)
 elif cmd == 'jiggle': jiggle(a[0], a[1], float(a[2]), float(a[3] or 0), a[4], a[5])
 elif cmd == 'jiggle-check': jiggle_check()
 PY
@@ -1089,6 +1150,7 @@ case $1 in
   all)        shift; all "$@";;
   uninstall)  shift; uninstall "$@";;
   _agent)     need_py && exec python3 -I -c "$(helper_py)" hold system "" "" 0 "" "";;   # internal: agent service
+  _resume)    resume;;                                                                 # internal: login entry
   help|-h|--help) usage;;
   -v|--version|version) echo "awake $VERSION (Linux)";;
   "")         turn_on;;

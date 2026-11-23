@@ -5,8 +5,10 @@ import os
 import pwd
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -18,14 +20,19 @@ linux_only = pytest.mark.skipif(sys.platform != "linux", reason="Linux version")
 mac_only = pytest.mark.skipif(sys.platform != "darwin", reason="macOS version")
 
 
-def run(cmd, home, **kw):
+def awake_env(home, extra=None):
     # AWAKE_*: never read the real /etc or /sys (a lid setting or a loaded vkms driver would change the output).
     env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"),
                AWAKE_LID_CONF=str(home / "awake-lid.conf"),
                AWAKE_VD_BOOT=str(home / "modules-load.d" / "awake-vdisplay.conf"),
                AWAKE_VKMS=str(home / "sys-module-vkms"), AWAKE_DRM=str(home / "sys-class-drm"),
                AWAKE_MODULES=str(home / "lib-modules"))
-    env.update(kw.pop("env", {}))
+    env.update(extra or {})
+    return env
+
+
+def run(cmd, home, **kw):
+    env = awake_env(home, kw.pop("env", {}))
     return subprocess.run([str(c) for c in cmd], capture_output=True, text=True, env=env, timeout=60, **kw)
 
 
@@ -207,12 +214,187 @@ def test_linux_install_and_uninstall(tmp_path):
     vd_boot = tmp_path / "modules-load.d" / "awake-vdisplay.conf"   # and so does the virtual display setting
     vd_boot.parent.mkdir()
     vd_boot.write_text("vkms\n")
+    entry = tmp_path / ".config" / "autostart" / "awake-on.desktop"   # keep-awake's login entry goes
+    entry.parent.mkdir(parents=True)
+    entry.write_text("[Desktop Entry]\n")
+    (tmp_path / ".awake").mkdir(exist_ok=True)
+    (tmp_path / ".awake" / "on.boot").write_text("0\n")
     r = run([installed, "uninstall", "-y"], tmp_path, env={"PATH": path})
     assert r.returncode == 0, r.stdout + r.stderr
+    assert not entry.exists()
     assert "keep your lid setting" in r.stdout and (tmp_path / "awake-lid.conf").exists()
     assert "keep the virtual display setting" in r.stdout and vd_boot.exists()
     assert not installed.exists() and not (tmp_path / ".awake").exists()
     assert bashrc.read_text().strip() == "export FOO=1"
+
+
+# ---- Linux keep-awake after a restart ----
+FAKE_PY = r"""#!/bin/sh
+# python3 -I -c CODE ARGS: awake's PyGObject check passes, and "hold" runs a stand-in helper
+[ "$1" = -I ] && shift
+[ "$1" = -c ] && shift 2
+[ "$1" = hold ] || exit 0
+shift
+echo "hold $*" >> "@LOG@"
+exec "@BIN@/awake-hold" "$@"
+"""
+FAKE_HOLD = r"""#!/bin/sh
+# Stands in for awake's helper, under the same process name: kind pidf untilf end errf heldf [wait]
+if [ -n "$FAKE_HOLD_FAILS" ]; then echo "nothing accepted a keep-awake request" > "$5"; exit 1; fi
+echo "screen:freedesktop sleep:logind" > "$6"
+echo $$ > "$2"
+sleep 300 &
+trap 'kill $! 2>/dev/null; [ "$(cat "$2" 2>/dev/null)" = $$ ] && rm -f "$2" "$3" "$6"; exit 0' TERM INT
+wait
+"""
+
+
+@pytest.fixture
+def fake_helper(tmp_path):
+    """A python3 whose keep-awake helper only pretends: nothing asks the real desktop for anything."""
+    fake = tmp_path / "fakepy"
+    fake.mkdir()
+    log = tmp_path / "hold.log"
+    (fake / "python3").write_text(FAKE_PY.replace("@LOG@", str(log)).replace("@BIN@", str(fake)))
+    (fake / "awake-hold").write_text(FAKE_HOLD)
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    env = {"PATH": "%s:%s" % (fake, os.environ["PATH"])}
+    yield env, log
+    run([LINUX, "off"], tmp_path, env=env)   # stop a stand-in a failed test left running
+
+
+def wait_for(cond, secs=10):
+    end = time.time() + secs
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def holds(log):
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def restart(home):
+    """What a restart does to keep-awake: its helper is stopped (and removes its pid file)."""
+    pidf = home / ".awake" / "pid"
+    os.kill(int(pidf.read_text()), signal.SIGTERM)
+    assert wait_for(lambda: not pidf.exists())
+
+
+def log_in(home, env):
+    """Log in: run the command of awake's login entry, as the desktop does."""
+    entry = (home / ".config" / "autostart" / "awake-on.desktop").read_text()
+    cmd = [ln[5:] for ln in entry.splitlines() if ln.startswith("Exec=")][0].split()
+    return subprocess.Popen(cmd, env=awake_env(home, env), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def status(home, env):
+    return run([LINUX, "status"], home, env=env).stdout
+
+
+@linux_only
+def test_linux_on_comes_back_after_a_restart(tmp_path, fake_helper):
+    env, log = fake_helper
+    entry, boot = tmp_path / ".config" / "autostart" / "awake-on.desktop", tmp_path / ".awake" / "on.boot"
+    r = run([LINUX, "on"], tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout == "awake: ON until you run 'awake off' (screen kept on, no auto-lock or sleep, also after restarts)\n"
+    assert "Exec=%s _resume\n" % LINUX in entry.read_text() and boot.read_text() == "0\n"
+    assert status(tmp_path, env) == "ON (screen kept on, no auto-lock or sleep, also after restarts)\n"
+    restart(tmp_path)
+    assert status(tmp_path, env) == "OFF (it turns back on at your next login; 'awake off' stops that)\n"
+    login = log_in(tmp_path, env)
+    try:
+        assert wait_for(lambda: status(tmp_path, env).startswith("ON"))
+        assert status(tmp_path, env) == "ON (screen kept on, no auto-lock or sleep, also after restarts)\n"
+        assert int((tmp_path / ".awake" / "pid").read_text()) == login.pid   # the entry's own process holds it
+        args = holds(log)[-1].split()
+        assert args[1] == "display" and args[4] == "0" and args[-1] == "60"   # no timer; waits for the desktop
+        r = run([LINUX, "_resume"], tmp_path, env=env)   # a second login entry run while it's on: nothing new
+        assert r.returncode == 0 and len(holds(log)) == 2
+    finally:
+        r = run([LINUX, "off"], tmp_path, env=env)
+        login.wait(5)
+    assert r.stdout.startswith("awake: OFF") and not entry.exists() and not boot.exists()
+    assert status(tmp_path, env) == "OFF\n"
+
+
+@linux_only
+def test_linux_timed_on_comes_back_only_until_its_end(tmp_path, fake_helper):
+    env, log = fake_helper
+    entry, boot = tmp_path / ".config" / "autostart" / "awake-on.desktop", tmp_path / ".awake" / "on.boot"
+    r = run([LINUX, "2h"], tmp_path, env=env)
+    assert r.returncode == 0 and r.stdout.endswith("(screen kept on, no auto-lock or sleep, also after restarts)\n"), r.stdout
+    end = int(boot.read_text())
+    assert abs(end - (time.time() + 7200)) < 30
+    assert "left (until" in status(tmp_path, env) and "also after restarts" in status(tmp_path, env)
+    restart(tmp_path)
+    login = log_in(tmp_path, env)   # logged in again before the end: on until the same time
+    try:
+        assert wait_for(lambda: status(tmp_path, env).startswith("ON"))
+        assert (tmp_path / ".awake" / "until").read_text().strip() == str(end) and holds(log)[-1].split()[4] == str(end)
+        restart(tmp_path)
+    finally:
+        login.wait(5)
+    boot.write_text("%d\n" % (time.time() - 60))   # logged in again after the end: stays off, entry removed
+    assert status(tmp_path, env) == "OFF\n"
+    r = run([LINUX, "_resume"], tmp_path, env=env)
+    assert r.returncode == 0 and len(holds(log)) == 2
+    assert not entry.exists() and not boot.exists() and status(tmp_path, env) == "OFF\n"
+
+
+@linux_only
+def test_linux_on_again_makes_a_running_one_come_back(tmp_path, fake_helper):
+    # Turned on by a version that didn't come back after restarts: 'awake on' again adds the login
+    # entry, and keeps the timer it has.
+    env, log = fake_helper
+    entry, boot = tmp_path / ".config" / "autostart" / "awake-on.desktop", tmp_path / ".awake" / "on.boot"
+    run([LINUX, "1h"], tmp_path, env=env)
+    end = boot.read_text()
+    entry.unlink()
+    boot.unlink()
+    assert status(tmp_path, env).endswith("(screen kept on, no auto-lock or sleep)\n")
+    r = run([LINUX, "on"], tmp_path, env=env)
+    assert r.stdout == "awake: already on\n" and entry.exists() and boot.read_text() == end, r.stdout
+    assert len(holds(log)) == 1
+
+
+@linux_only
+def test_linux_toggle_and_all_off_remove_the_login_entry(tmp_path, fake_helper):
+    env, log = fake_helper
+    entry = tmp_path / ".config" / "autostart" / "awake-on.desktop"
+    run([LINUX, "toggle"], tmp_path, env=env)
+    assert entry.exists()
+    run([LINUX, "toggle"], tmp_path, env=env)
+    assert not entry.exists()
+    run([LINUX, "on"], tmp_path, env=env)
+    run([LINUX, "all", "off"], tmp_path, env=env)
+    assert not entry.exists() and status(tmp_path, env) == "OFF\n"
+
+
+@linux_only
+def test_linux_on_from_an_odd_path_still_turns_on(tmp_path, fake_helper):
+    env, log = fake_helper
+    odd = tmp_path / "my bin" / "awake"   # a space can't go into the login entry's Exec line safely
+    odd.parent.mkdir()
+    shutil.copy(LINUX, odd)
+    r = run([odd, "on"], tmp_path, env=env)
+    assert r.returncode == 0 and "won't come back after a restart" in r.stdout, r.stdout
+    assert r.stdout.endswith("(screen kept on, no auto-lock or sleep)\n")
+    assert not (tmp_path / ".config" / "autostart" / "awake-on.desktop").exists()
+    assert not (tmp_path / ".awake" / "on.boot").exists()
+    assert status(tmp_path, env) == "ON (screen kept on, no auto-lock or sleep)\n"
+
+
+@linux_only
+def test_linux_on_that_fails_adds_no_login_entry(tmp_path, fake_helper):
+    env, log = fake_helper
+    r = run([LINUX, "on"], tmp_path, env=dict(env, FAKE_HOLD_FAILS="1"))
+    assert r.returncode == 1 and "could not turn on" in r.stdout, r.stdout
+    assert not (tmp_path / ".config" / "autostart" / "awake-on.desktop").exists()
 
 
 # ---- macOS ----
