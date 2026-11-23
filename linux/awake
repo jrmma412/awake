@@ -13,9 +13,10 @@ COSMIC_IDLE=$CONF/cosmic/com.system76.CosmicIdle/v1
 AGENT_UNIT=awake-agent.service
 AGENT_UNIT_FILE=$CONF/systemd/user/$AGENT_UNIT
 LID_CONF=${AWAKE_LID_CONF:-/etc/systemd/logind.conf.d/awake-lid.conf}   # the override is for the tests
-VD_BOOT=${AWAKE_VD_BOOT:-/etc/modules-load.d/awake-vdisplay.conf}       # virtual display; these three
+VD_BOOT=${AWAKE_VD_BOOT:-/etc/modules-load.d/awake-vdisplay.conf}       # virtual display; these four
 VKMS=${AWAKE_VKMS:-/sys/module/vkms}                                     # overrides are for the tests too
 DRM=${AWAKE_DRM:-/sys/class/drm}
+MODULES=${AWAKE_MODULES:-/lib/modules}
 VD_SIZE=1920x1080
 mkdir -p "$D" && chmod 700 "$D"
 
@@ -586,12 +587,10 @@ vd_connector() {   # the vkms display's sysfs folder (e.g. .../card1-Virtual-1),
   done
   return 1
 }
-vd_name() { local b=${1##*/}; echo "${b#*-}"; }   # .../card1-Virtual-1 -> Virtual-1 (a VM's own screen can also be Virtual-1)
-# Is the desktop COSMIC? From SSH or a service there's no XDG_CURRENT_DESKTOP, so look for its compositor.
-on_cosmic() {
-  if [[ -n ${XDG_CURRENT_DESKTOP:-} ]]; then [[ ${XDG_CURRENT_DESKTOP^^} == *COSMIC* ]]
-  else pgrep -xu "$UID" cosmic-comp >/dev/null; fi
-}
+vd_name() { local b=${1##*/}; echo "${b#*-}"; }   # .../card1-Virtual-1 -> Virtual-1
+# Is the desktop COSMIC? Its compositor running counts too: from SSH there's no XDG_CURRENT_DESKTOP, and
+# some people set it to something else on COSMIC (for app theming).
+on_cosmic() { [[ ${XDG_CURRENT_DESKTOP^^} == *COSMIC* ]] || pgrep -xu "$UID" cosmic-comp >/dev/null; }
 # cosmic-randr reaches the desktop through its Wayland socket; find that when run from SSH or a service.
 wl_env() {
   [[ -n ${WAYLAND_DISPLAY:-} ]] && return 0
@@ -663,8 +662,9 @@ display_on() {
       [[ -z $size ]] || echo "Run 'awake display $size' again after the restart to set its size."
       return 0
     fi
+    # (only when this kernel's module folder exists: after a kernel update without a restart it may be gone)
     mi=$(PATH=$PATH:/usr/sbin:/sbin command -v modinfo)
-    if [[ -n $mi ]] && ! "$mi" -n vkms >/dev/null 2>&1; then
+    if [[ -n $mi && -d $MODULES/$(uname -r) ]] && ! "$mi" -n vkms >/dev/null 2>&1; then
       echo "awake: this Linux kernel has no vkms driver, which the virtual display comes from."
       echo "Some distributions put it in a separate package of extra kernel drivers."
       return 1
@@ -713,20 +713,22 @@ display_off() {
   local files f own="" others=()
   files=$(vd_boot_files)
   if [[ -z $files ]] && ! vd_loaded; then echo "awake: display: nothing to turn off (it isn't set up)"; return 0; fi
-  echo "awake: the virtual display stays until the vkms driver is gone, which takes root and a restart."
+  if vd_loaded; then echo "awake: the virtual display stays until the vkms driver is gone, which takes root and a restart."
+  else echo "awake: the virtual display isn't there yet: it starts at the next restart, when the vkms driver loads."; fi
   while IFS= read -r f; do
     [[ -z $f ]] && continue
     if [[ $f == "$VD_BOOT" ]]; then own=$f; else others+=("$f"); fi
   done <<<"$files"
   if [[ -n $own ]]; then
-    echo "Run this yourself, then restart the PC:"
+    if vd_loaded; then echo "Run this yourself, then restart the PC:"; else echo "To cancel it, run this yourself:"; fi
     echo "  sudo rm $own"
   fi
   for f in ${others[@]+"${others[@]}"}; do
     echo "vkms is ${own:+also }loaded at boot by $f: remove its 'vkms' line (as root), then restart."
   done
   [[ -n $files ]] || echo "Nothing in ${VD_BOOT%/*} loads it at boot, so it should be gone after the next restart."
-  echo "To hide it before then, turn it off in your display settings (on COSMIC: Settings > Displays)."
+  vd_loaded && echo "To hide it before then, turn it off in your display settings (on COSMIC: Settings > Displays)."
+  return 0
 }
 
 display() {

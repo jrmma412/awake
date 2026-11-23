@@ -16,10 +16,11 @@ installer and Homebrew formula just point at the new release.
     offers for that size. COSMIC remembers it. A size it doesn't offer prints the sizes it does.
   - Other desktops, or no desktop to talk to: reports the display from `/sys/class/drm`, and says to
     set its size in the display settings.
-  - Run from SSH: finds the desktop's Wayland socket in `$XDG_RUNTIME_DIR`, and tells COSMIC by its
-    `cosmic-comp` process when `XDG_CURRENT_DESKTOP` isn't set.
-  - Before printing the setup command, checks with `modinfo` that the kernel has `vkms`. A size
-    asked for before the restart says to run it again afterwards.
+  - Run from SSH: finds the desktop's Wayland socket in `$XDG_RUNTIME_DIR`. It's COSMIC if
+    `XDG_CURRENT_DESKTOP` says so or its `cosmic-comp` process is running.
+  - Before printing the setup command, checks with `modinfo` that the kernel has `vkms` (skipped
+    after a kernel update not yet booted). A size asked for before the restart says to run it again
+    afterwards, and `off` before the restart says how to cancel it.
   - `off` prints how to remove it (`sudo rm` of the file, then restart). It never deletes a shared
     file: if another file loads `vkms`, it says to remove that line.
   - `awake status` shows a `display:` line once it's set up. `awake uninstall` keeps the boot file
@@ -44,10 +45,11 @@ installer and Homebrew formula just point at the new release.
 - Independent review before release. Fixed from it:
   - The refresh rate printed as "60, Hz" in a decimal-comma locale (awk); it's now whole-number
     arithmetic.
-  - Telling COSMIC apart: a Wayland socket alone was taken as COSMIC. Now `XDG_CURRENT_DESKTOP`
-    decides, or the `cosmic-comp` process when that isn't set (SSH).
-  - The sysfs fallback read every `card*-Virtual-1`; in a VM, whose own screen can also be
-    `Virtual-1`, that gave the wrong answer. It now reads the vkms connector's own folder.
+  - Telling COSMIC apart: a Wayland socket alone was taken as COSMIC. Now it takes
+    `XDG_CURRENT_DESKTOP` naming COSMIC, or its `cosmic-comp` process (for SSH, or when
+    `XDG_CURRENT_DESKTOP` is set to something else for app theming).
+  - The sysfs fallback looked the connector up by name again; it now reads the vkms connector's own
+    folder.
   - `display off`: file names with spaces, "also" only when awake's own file is there too, no
     "Run this yourself" line without a command after it, and no claim about boot loading beyond
     `/etc/modules-load.d`.
@@ -56,25 +58,35 @@ installer and Homebrew formula just point at the new release.
   - Tests: the fake `cosmic-randr mode` now turns the display on (as COSMIC does), so a test catches
     awake setting a size on a display that's turned off. A check after every display test fails it
     if `sudo` or `cosmic-randr enable/disable` ran.
+- A second review round fixed:
+  - The `modinfo` check could say there's no `vkms` after a kernel update not yet booted (the
+    running kernel's module folder is gone on some distributions); it now only trusts `modinfo`
+    when that folder exists.
+  - `XDG_CURRENT_DESKTOP` set to another name on COSMIC stopped the size from being set.
+  - `display off` before the first restart described a display that wasn't there yet.
+  - The after-test check read the log from a folder pytest may already have deleted.
+  - The VM test assumed two connectors could both be `Virtual-1`; the kernel numbers them across
+    cards, so it now has the VM's screen as `Virtual-1` and vkms as `Virtual-2`.
 
 ### Testing status
-- pytest on Linux: 85 passed, 15 skipped (macOS-only). The display tests run with a fake
+- pytest on Linux: 89 passed, 15 skipped (macOS-only). The display tests run with a fake
   `/sys/class/drm`, `/sys/module/vkms`, `modules-load.d` folder, `cosmic-randr`, `pgrep` and
   `modinfo`. They cover:
-  - not set up, set up but waiting for the restart, and a kernel without `vkms`
+  - not set up, set up but waiting for the restart, a kernel without `vkms`, and a kernel update
+    not yet booted
   - setting 1920x1080 from the driver default, and keeping a size you chose (also in a
     decimal-comma locale)
   - asking for a size, including one it doesn't offer
   - turned off in COSMIC, also when a size is given
-  - `off`, including other files that load `vkms` (one with a space in its name)
-  - other desktops (no desktop, GNOME, SSH with COSMIC not running), COSMIC not answering, finding
-    COSMIC from SSH, a VM screen also called `Virtual-1`, the driver loaded with no display, and
-    bad arguments
+  - `off`, before the restart, and with other files that load `vkms` (one with a space in its name)
+  - other desktops (no desktop, GNOME, SSH with COSMIC not running), COSMIC under another desktop
+    name, COSMIC not answering, finding COSMIC from SSH, a VM with its own screen, the driver loaded
+    with no display, and bad arguments
   - after every display test: `sudo` never ran, and the display was never switched on or off
 - The test file compiles on Python 3.9.
-- Twelve deliberate bugs put back into the script one at a time (each review fix undone, plus
+- Fourteen deliberate bugs put back into the script one at a time (each review fix undone, plus
   running `sudo`, switching the display on, and setting a size on a display that's off): each made
-  at least one test fail.
+  at least one test fail, also with pytest set to delete passing tests' folders.
 - Live on Pop!_OS 24.04 (COSMIC, NVIDIA RTX 3080, one monitor on DP-3):
   - With `sudo modprobe vkms` in the running desktop: COSMIC added `Virtual-1` at 1024x768 to the
     right of the monitor, with wallpaper, panel and dock. `cosmic-randr mode Virtual-1 1920 1080`
