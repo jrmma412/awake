@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.13.0 (2026-11-23)
 
-Linux only: the macOS script, installer and Homebrew formula are unchanged.
+Linux only. On macOS nothing works differently: the script changes only its version number, and the
+installer and Homebrew formula just point at the new release.
 
 ### Added
 - Linux `awake display [on [WIDTHxHEIGHT]|off|status]` (was "macOS-only"): a virtual display from
