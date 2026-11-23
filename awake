@@ -532,7 +532,8 @@ agent() {
     off)
       if [[ -f $AGENT_PLIST ]]; then
         launchctl bootout "gui/$UID/$AGENT_LABEL" 2>/dev/null
-        rm -f "$AGENT_PLIST" && echo "awake: agent mode removed (normal sleep settings apply again)"
+        rm -f "$AGENT_PLIST" && echo "awake: agent mode removed (normal sleep settings apply again)" \
+          || { echo "awake: could not remove $AGENT_PLIST"; return 1; }
       else
         echo "awake: agent mode is not installed"
       fi
@@ -716,11 +717,14 @@ all() {
   case ${1:-} in random|simple|normal) jmode=$1; shift;; esac
   local arg=${1:-} secs=""
   if [[ $arg == off || $arg == stop ]]; then
-    turn_off; jiggle_off
-    if [[ -f $AGENT_PLIST ]]; then agent off; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
-    if (( with_display )); then display off; echo "awake all: everything is off, including the virtual display"
+    local rc=0
+    turn_off || rc=1; jiggle_off || rc=1
+    if [[ -f $AGENT_PLIST ]]; then agent off || rc=1; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
+    (( with_display )) && { display off || rc=1; }
+    if (( rc )); then echo "awake all: not everything could be turned off (see above); try 'awake all off' again"
+    elif (( with_display )); then echo "awake all: everything is off, including the virtual display"
     else echo "awake all: everything is off"; fi
-    return 0
+    return $rc
   fi
   if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [simple|random] [time|off] [--display]"; return 1; }; fi
   local rc=0 jg=" + jiggle"

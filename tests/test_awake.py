@@ -625,6 +625,28 @@ def test_mac_all_bad_time_usage_mentions_display(tmp_path):
 
 
 @mac_only
+def test_mac_all_off_reports_failure(tmp_path):
+    """If a part can't be turned off, `awake all off` says so and exits 1, not 'everything is off'."""
+    la = tmp_path / "Library" / "LaunchAgents"
+    la.mkdir(parents=True)
+    (la / "com.jrmma412.awake.agent.plist").write_text("<plist/>")
+    la.chmod(0o500)   # rm of the plist now fails
+    try:
+        r = run([MAC, "all", "off"], tmp_path)
+    finally:
+        la.chmod(0o700)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "not everything could be turned off" in r.stdout
+    assert "everything is off" not in r.stdout
+
+
+@mac_only
+def test_mac_all_off_ok_exits_zero(tmp_path):
+    r = run([MAC, "all", "off"], tmp_path)
+    assert r.returncode == 0 and "awake all: everything is off" in r.stdout
+
+
+@mac_only
 def test_mac_clamshell_bad_argument(tmp_path):
     r = run([MAC, "clamshell", "on"], tmp_path)
     assert r.returncode == 1 and "usage: awake clamshell" in r.stdout
