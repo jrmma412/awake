@@ -648,7 +648,8 @@ display() {
 # ---- awake clamshell: lid-closed sleep state, and the command to change it ----
 # Read-only. Closing a MacBook's lid uses a different sleep path that caffeinate (awake on / agent)
 # cannot block. Only macOS's own clamshell mode (on power with a real external display or dummy plug)
-# or `pmset disablesleep 1` keeps it awake. Whether a software virtual display counts is untested. awake never runs sudo: it prints the command for you to run.
+# or `pmset disablesleep 1` keeps it awake. Whether a software virtual display counts is untested.
+# awake never runs sudo: it prints the command for you to run.
 
 # A flag from the kernel power manager (IOPMrootDomain): yes / no / n/a.
 pm_flag() {
