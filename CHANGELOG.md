@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased
+
+Linux only: the macOS script, installer and Homebrew formula are unchanged.
+
+### Added
+- Linux `awake display [on [WIDTHxHEIGHT]|off|status]` (was "macOS-only"): a virtual display from
+  the Linux kernel's `vkms` driver, for a PC used with no monitor or with the monitor off
+  (Moonlight/Sunshine, remote desktop), instead of an HDMI dummy plug.
+  - Not set up: prints the one command that loads `vkms` at every boot
+    (`echo vkms | sudo tee /etc/modules-load.d/awake-vdisplay.conf`), then restart.
+  - Loaded, on COSMIC: sets it to 1920x1080 while it still has the driver's own default size
+    (1024x768), or to the size given, using `cosmic-randr mode` with the highest refresh COSMIC
+    offers for that size. COSMIC remembers it. A size it doesn't offer prints the sizes it does.
+  - Other desktops, or no desktop to talk to: reports the display from `/sys/class/drm`, and says to
+    set its size in the display settings.
+  - Run from SSH: finds the desktop's Wayland socket in `$XDG_RUNTIME_DIR`.
+  - `off` prints how to remove it (`sudo rm` of the file, then restart). It never deletes a shared
+    file: if another file loads `vkms`, it says to remove that line.
+  - `awake status` shows a `display:` line once it's set up. `awake uninstall` keeps the boot file
+    and prints how to remove it.
+
+### Decisions
+- awake never runs `sudo` (as with `awake clamshell` and the jiggle setup): it prints the command.
+- Set up for the next boot rather than `sudo modprobe vkms` into the running desktop, so COSMIC
+  starts with the display instead of having it added while running.
+- awake never switches the virtual display on or off itself (no `cosmic-randr enable/disable`). In
+  testing, `disable` followed within a second by `enable` deadlocked cosmic-comp: its main thread
+  and the DP-3 render thread both waited forever, the desktop froze, and only a restart fixed it
+  (it looks like pop-os/cosmic-comp#2693). If it's turned off in COSMIC's settings,
+  `awake display` says so and leaves turning it back on to you.
+- `off` doesn't hide the display right away, for the same reason; it says how to remove the driver
+  setting and that the display settings can hide it until then.
+- COSMIC has no virtual outputs of its own yet (its screen-sharing portal offers no virtual
+  source; pop-os/cosmic-comp#2878 is only a prototype), and NVIDIA's driver ignores the kernel's
+  EDID override, so `vkms` is the only way on this hardware.
+
+### Testing status
+- pytest on Linux: 79 passed, 15 skipped (macOS-only). New display tests run with a fake
+  `/sys/class/drm`, `/sys/module/vkms`, `modules-load.d` folder and `cosmic-randr`. They cover:
+  - not set up, and set up but waiting for the restart
+  - setting 1920x1080 from the driver default, and keeping a size you chose
+  - asking for a size, including one it doesn't offer
+  - turned off in COSMIC
+  - `off`, including a shared file that also loads `vkms`
+  - another desktop, COSMIC not answering, finding the desktop from SSH, the driver loaded with no
+    display, and bad arguments
+  - every test checks that `sudo` never ran, and none switch the display on or off
+- Every test file change compiles on Python 3.9.
+- A run with five deliberate bugs in the script: each one made at least one test fail.
+- Live on Pop!_OS 24.04 (COSMIC, NVIDIA RTX 3080, one monitor on DP-3), with
+  `sudo modprobe vkms` in the running desktop:
+  - COSMIC added `Virtual-1` at 1024x768 to the right of the monitor, with wallpaper, panel and dock.
+  - `cosmic-randr mode Virtual-1 1920 1080` worked.
+  - Capturing it (ext-image-copy-capture) returned full frames in about 10-20 ms.
+  - It cost cosmic-comp about 2% of one CPU core.
+  - Then the freeze described under Decisions.
+- Not tested: the new script on the real desktop, loading `vkms` at boot, running with no monitor,
+  streaming it with Sunshine, GNOME and KDE.
+
 ## 1.12.0 (2026-11-22)
 
 Linux catch-up: the macOS changes from 1.9.0 to 1.11.0, ported to and tested on Linux. No change
