@@ -587,6 +587,44 @@ def test_mac_clamshell_does_not_claim_virtual_display_counts(tmp_path):
 
 
 @mac_only
+def test_mac_all_off_leaves_display_alone(tmp_path):
+    """Plain `awake all off` never touches the virtual display."""
+    env, calls = fake_vdisplay(tmp_path, 0)
+    r = run([MAC, "all", "off"], tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "everything is off" in r.stdout and "virtual display" not in r.stdout
+    assert not calls.exists() or "vdisplay stop" not in calls.read_text()
+
+
+@mac_only
+@pytest.mark.parametrize("args", [["all", "off", "--display"], ["all", "--display", "off"],
+                                  ["all", "--display", "stop"]])
+def test_mac_all_off_display_flag_removes_display(tmp_path, args):
+    """`--display` (in any position) also stops the virtual display."""
+    env, calls = fake_vdisplay(tmp_path, 0)
+    r = run([MAC] + args, tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "including the virtual display" in r.stdout
+    assert "vdisplay stop" in calls.read_text()
+
+
+@mac_only
+def test_mac_all_off_display_flag_without_vdisplay(tmp_path):
+    """`--display` with the add-on not installed says so and still turns the rest off."""
+    if Path("/opt/homebrew/bin/vdisplay").exists():
+        pytest.skip("vdisplay is really installed on this Mac")
+    r = run([MAC, "all", "off", "--display"], tmp_path, env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "display add-on is not installed" in r.stdout and "everything is off" in r.stdout
+
+
+@mac_only
+def test_mac_all_bad_time_usage_mentions_display(tmp_path):
+    r = run([MAC, "all", "bogus", "--display"], tmp_path)
+    assert r.returncode == 1 and "[--display]" in r.stdout
+
+
+@mac_only
 def test_mac_clamshell_bad_argument(tmp_path):
     r = run([MAC, "clamshell", "on"], tmp_path)
     assert r.returncode == 1 and "usage: awake clamshell" in r.stdout

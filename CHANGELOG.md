@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- macOS `awake all --display` / `awake all off --display`: optionally include the virtual display add-on
+  when turning everything on or off (flag works in any position). Plain `awake all off` still leaves
+  the display alone, so existing setups don't change. Tests use a fake vdisplay.
+
 ### Changed
 - macOS `awake clamshell`, README: no longer says a virtual display counts for clamshell mode.
   On an M1 Pro (macOS 26.7.3) with the vdisplay online and the lid open, macOS still reported

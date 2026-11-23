@@ -230,7 +230,9 @@ awake all            # keep awake + mouse jiggle + agent mode ("awake all on" wo
 awake all 2h         # the same; the timer covers keep-awake and jiggle
 awake all random      # everything, with random jiggle in one command (also `all on random`,
                      # `all random 2h`, `all simple`; works even if it's already on)
-awake all off        # stop all three
+awake all off        # stop all three (the virtual display, if you have it, is left alone)
+awake all off --display   # ...and also remove the virtual display
+awake all --display       # ...or turn everything on, including the virtual display
 ```
 
 - Agent mode has no timer: it stays on (also after restarts) until `awake all off` or
