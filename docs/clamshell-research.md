@@ -29,3 +29,39 @@ Turn off physical monitors so only the vdisplay remains.
 Safety: save layout first, never disable the last active display, auto-restore after a timeout.
 Caveat: if macOS doesn't count the vdisplay for clamshell, this alone won't keep the Mac awake
 with the lid closed; `pmset disablesleep 1` would still be needed.
+
+## Display on/off tooling research (2026-11-23)
+
+| Option | License | Activity | Notes |
+|---|---|---|---|
+| displayplacer (jakehilborn) | MIT (verified via GitHub API) | latest release v1.4.0 (2023-06), last push 2024-06 | `enabled:false` / `enabled:true`; Homebrew bottles exist for Sequoia and Tahoe |
+| BetterDisplay + betterdisplaycli | no license on the repo (not open source); pricing of the CLI unconfirmed | very active | needs the app running; disconnect is Apple Silicon only; CLI reconnect of virtual displays reported unreliable |
+| blackoutd | GPL-3.0 | active | built-in display only, private `CGSConfigureDisplayEnabled` |
+
+Known risks: screen IDs can shift when displays wake in a different order (displayplacer README);
+after `enabled:false` a screen may need unplugging/replugging to return. No report found of
+`enabled:false` failing on Sequoia/Tahoe, and no confirmation it works there either: test on hardware.
+
+Sources: displayplacer README (raw.githubusercontent.com/jakehilborn/displayplacer/master/README.md),
+formulae.brew.sh/formula/displayplacer, BetterDisplay CLI wiki
+(github.com/waydabber/BetterDisplay/wiki/Integration-features,-CLI), BetterDisplay discussion #3947.
+
+## Proposed design (not implemented)
+Optional add-on, like vdisplay: installed after asking, nothing runs unless the user opts in.
+- `awake display only`: save the layout, disable physical monitors, leave the vdisplay.
+- `awake display restore`: put the saved layout back.
+- Look displays up by name/type at run time, never by a stored screen id.
+- Never disable the last active display. Auto-restore after a timeout (default a few minutes unless
+  confirmed), so a bad state can't leave the Mac with no screen.
+- Tests with a fake displayplacer; then a manual hardware test (spare monitor first).
+
+Gate: only worth building if macOS counts the vdisplay for clamshell mode. Battery test says it
+did not; the AC test (vdisplay only, charger direct) decides. If it never counts, this is a layout
+feature and `pmset disablesleep 1` stays the way to keep the Mac awake with the lid closed.
+
+## Hardware test plan for displayplacer (when at the Mac)
+1. `brew install jakehilborn/jakehilborn/displayplacer`; `displayplacer list` and note ids.
+2. With a spare monitor: `displayplacer "id:<id> enabled:false"`, then `enabled:true`. Does it return
+   without a replug? Do ids change after sleep/wake or a KVM switch?
+3. Repeat with the LG behind the KVM, since ids may differ per input.
+4. Re-run the lid-closed test on AC with only the vdisplay active.
