@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.15.0 (2026-11-23)
+
+macOS changes. On Linux nothing works differently: `linux/awake` changes only its version number, and
+the installers and Homebrew formula point at the new release.
 
 ### Added
 - macOS `awake all --display` / `awake all off --display`: optionally include the virtual display add-on
