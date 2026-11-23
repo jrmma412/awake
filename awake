@@ -646,8 +646,8 @@ display() {
 
 # ---- awake clamshell: lid-closed sleep state, and the command to change it ----
 # Read-only. Closing a MacBook's lid uses a different sleep path that caffeinate (awake on / agent)
-# cannot block. Only macOS's own clamshell mode (on power with an external display it counts) or
-# `pmset disablesleep 1` keeps it awake. awake never runs sudo: it prints the command for you to run.
+# cannot block. Only macOS's own clamshell mode (on power with a real external display or dummy plug)
+# or `pmset disablesleep 1` keeps it awake. Whether a software virtual display counts is untested. awake never runs sudo: it prints the command for you to run.
 
 # A flag from the kernel power manager (IOPMrootDomain): yes / no / n/a.
 pm_flag() {
@@ -689,8 +689,9 @@ clamshell() {
     echo "  sudo pmset -a disablesleep 1      (undo: sudo pmset -a disablesleep 0)"
   else
     echo "Closing the lid will put this Mac to sleep. 'awake' and 'awake agent' can't stop that."
-    echo "(A virtual display from 'awake display' may count as a monitor here: turn it on, unplug other"
-    echo " displays, and run 'awake clamshell' again. If this line still says yes, use the command below.)"
+    echo "(A virtual display from 'awake display' is not known to count as a monitor for clamshell mode,"
+    echo " and may not on Apple Silicon. A real monitor or HDMI dummy plug does. If this still says yes"
+    echo " with the display on, use the command below.)"
     echo "To keep it awake with the lid closed (asks for your password; stops ALL system sleep until undone):"
     echo "  sudo pmset -a disablesleep 1"
     echo "To undo:"

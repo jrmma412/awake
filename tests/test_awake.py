@@ -570,6 +570,23 @@ def test_mac_clamshell_only_reads(tmp_path):
 
 
 @mac_only
+def test_mac_clamshell_does_not_claim_virtual_display_counts(tmp_path):
+    """With lid-sleep reported, the hint must not promise a virtual display fixes it."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "ioreg").write_text(
+        '#!/bin/sh\necho \'"AppleClamshellState" = No\'\necho \'"AppleClamshellCausesSleep" = Yes\'\n'
+        'echo \'"SleepDisabled" = No\'\n')
+    (fake / "ioreg").chmod(0o755)
+    r = run([MAC, "clamshell"], tmp_path, env={"PATH": f"{fake}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Closing the lid will put this Mac to sleep" in r.stdout
+    assert "may count as a monitor" not in r.stdout
+    assert "not known to count" in r.stdout
+    assert "sudo pmset -a disablesleep 1" in r.stdout
+
+
+@mac_only
 def test_mac_clamshell_bad_argument(tmp_path):
     r = run([MAC, "clamshell", "on"], tmp_path)
     assert r.returncode == 1 and "usage: awake clamshell" in r.stdout

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- macOS `awake clamshell`, README: no longer says a virtual display counts for clamshell mode.
+  On an M1 Pro (macOS 26.7.3) with the vdisplay online and the lid open, macOS still reported
+  that closing the lid would sleep the Mac. Wording now says it's unconfirmed and points to
+  `pmset disablesleep 1`.
+
+### Testing status
+- Lid closed on an M1 Pro, macOS 26.7.3: a real monitor on AC stayed awake; the vdisplay alone on
+  battery slept ("Clamshell Sleep"). vdisplay alone on AC: still to test.
+
 ## 1.14.0 (2026-11-23)
 
 Linux only. On macOS nothing works differently: the script changes only its version number, and the

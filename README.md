@@ -173,8 +173,11 @@ awake agent off        # remove it
 
 Closing a MacBook's lid uses a separate sleep path that no keep-awake tool can block,
 including `awake`, `awake agent` and `caffeinate`. The Mac only stays awake with the
-lid closed if macOS's own clamshell mode applies (on power with an external display,
-dummy plug, or virtual display it counts) or if sleep is disabled with `pmset`.
+lid closed if macOS's own clamshell mode applies (on power with a real external display
+or an HDMI dummy plug) or if sleep is disabled with `pmset`. A software virtual display
+(`awake display`) is **not confirmed** to count: on an M1 Pro it did not change
+`AppleClamshellCausesSleep`. If `awake clamshell` still says the lid will sleep the Mac,
+use `pmset disablesleep 1`.
 
 ```
 awake clamshell        # will closing the lid sleep this Mac? and what to do about it
