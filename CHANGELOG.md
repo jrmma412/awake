@@ -16,7 +16,10 @@ installer and Homebrew formula just point at the new release.
     offers for that size. COSMIC remembers it. A size it doesn't offer prints the sizes it does.
   - Other desktops, or no desktop to talk to: reports the display from `/sys/class/drm`, and says to
     set its size in the display settings.
-  - Run from SSH: finds the desktop's Wayland socket in `$XDG_RUNTIME_DIR`.
+  - Run from SSH: finds the desktop's Wayland socket in `$XDG_RUNTIME_DIR`, and tells COSMIC by its
+    `cosmic-comp` process when `XDG_CURRENT_DESKTOP` isn't set.
+  - Before printing the setup command, checks with `modinfo` that the kernel has `vkms`. A size
+    asked for before the restart says to run it again afterwards.
   - `off` prints how to remove it (`sudo rm` of the file, then restart). It never deletes a shared
     file: if another file loads `vkms`, it says to remove that line.
   - `awake status` shows a `display:` line once it's set up. `awake uninstall` keeps the boot file
@@ -37,28 +40,54 @@ installer and Homebrew formula just point at the new release.
   source; pop-os/cosmic-comp#2878 is only a prototype), and NVIDIA's driver ignores the kernel's
   EDID override, so `vkms` is the only way on this hardware.
 
+### Review
+- Independent review before release. Fixed from it:
+  - The refresh rate printed as "60, Hz" in a decimal-comma locale (awk); it's now whole-number
+    arithmetic.
+  - Telling COSMIC apart: a Wayland socket alone was taken as COSMIC. Now `XDG_CURRENT_DESKTOP`
+    decides, or the `cosmic-comp` process when that isn't set (SSH).
+  - The sysfs fallback read every `card*-Virtual-1`; in a VM, whose own screen can also be
+    `Virtual-1`, that gave the wrong answer. It now reads the vkms connector's own folder.
+  - `display off`: file names with spaces, "also" only when awake's own file is there too, no
+    "Run this yourself" line without a command after it, and no claim about boot loading beyond
+    `/etc/modules-load.d`.
+  - A size asked for before the restart was silently dropped; a kernel without `vkms` got a setup
+    command that could never work.
+  - Tests: the fake `cosmic-randr mode` now turns the display on (as COSMIC does), so a test catches
+    awake setting a size on a display that's turned off. A check after every display test fails it
+    if `sudo` or `cosmic-randr enable/disable` ran.
+
 ### Testing status
-- pytest on Linux: 79 passed, 15 skipped (macOS-only). New display tests run with a fake
-  `/sys/class/drm`, `/sys/module/vkms`, `modules-load.d` folder and `cosmic-randr`. They cover:
-  - not set up, and set up but waiting for the restart
-  - setting 1920x1080 from the driver default, and keeping a size you chose
+- pytest on Linux: 85 passed, 15 skipped (macOS-only). The display tests run with a fake
+  `/sys/class/drm`, `/sys/module/vkms`, `modules-load.d` folder, `cosmic-randr`, `pgrep` and
+  `modinfo`. They cover:
+  - not set up, set up but waiting for the restart, and a kernel without `vkms`
+  - setting 1920x1080 from the driver default, and keeping a size you chose (also in a
+    decimal-comma locale)
   - asking for a size, including one it doesn't offer
-  - turned off in COSMIC
-  - `off`, including a shared file that also loads `vkms`
-  - another desktop, COSMIC not answering, finding the desktop from SSH, the driver loaded with no
-    display, and bad arguments
-  - every test checks that `sudo` never ran, and none switch the display on or off
-- Every test file change compiles on Python 3.9.
-- A run with five deliberate bugs in the script: each one made at least one test fail.
-- Live on Pop!_OS 24.04 (COSMIC, NVIDIA RTX 3080, one monitor on DP-3), with
-  `sudo modprobe vkms` in the running desktop:
-  - COSMIC added `Virtual-1` at 1024x768 to the right of the monitor, with wallpaper, panel and dock.
-  - `cosmic-randr mode Virtual-1 1920 1080` worked.
-  - Capturing it (ext-image-copy-capture) returned full frames in about 10-20 ms.
-  - It cost cosmic-comp about 2% of one CPU core.
-  - Then the freeze described under Decisions.
-- Not tested: the new script on the real desktop, loading `vkms` at boot, running with no monitor,
-  streaming it with Sunshine, GNOME and KDE.
+  - turned off in COSMIC, also when a size is given
+  - `off`, including other files that load `vkms` (one with a space in its name)
+  - other desktops (no desktop, GNOME, SSH with COSMIC not running), COSMIC not answering, finding
+    COSMIC from SSH, a VM screen also called `Virtual-1`, the driver loaded with no display, and
+    bad arguments
+  - after every display test: `sudo` never ran, and the display was never switched on or off
+- The test file compiles on Python 3.9.
+- Twelve deliberate bugs put back into the script one at a time (each review fix undone, plus
+  running `sudo`, switching the display on, and setting a size on a display that's off): each made
+  at least one test fail.
+- Live on Pop!_OS 24.04 (COSMIC, NVIDIA RTX 3080, one monitor on DP-3):
+  - With `sudo modprobe vkms` in the running desktop: COSMIC added `Virtual-1` at 1024x768 to the
+    right of the monitor, with wallpaper, panel and dock. `cosmic-randr mode Virtual-1 1920 1080`
+    worked. Capturing it (ext-image-copy-capture) returned full frames in about 10-20 ms, and it
+    cost cosmic-comp about 2% of one CPU core. Then the freeze described under Decisions.
+  - Loaded at boot from `/etc/modules-load.d/awake-vdisplay.conf`: `vkms` loaded and COSMIC came up
+    normally with `Virtual-1`. COSMIC had remembered it as turned off (from before the freeze), and
+    `awake display` said so and left it alone. Once turned on in Settings > Displays, it came back
+    at the 1920x1080 COSMIC remembered.
+  - The script on that desktop: `awake display 2560x1600` and back to `1920x1080` (about 0.1 s
+    each), a size it doesn't offer (2560x1440), `display status`, `awake status`, `display off`,
+    and running it with no desktop variables (as from SSH). COSMIC stayed responsive throughout.
+- Not tested: running with no monitor attached, streaming it with Sunshine, GNOME and KDE.
 
 ## 1.12.0 (2026-11-22)
 

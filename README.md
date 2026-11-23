@@ -315,9 +315,12 @@ All the commands above work the same (`awake 2h`, `awake until 5pm`, `awake jigg
   and COSMIC remembers it. On other desktops, set its size in the display settings.
   `awake display off` prints how to remove it (root and a restart again). `awake status` shows it
   once it's set up, and `awake uninstall` leaves the boot setting in place.
-  - Tested on Pop!_OS 24.04 (COSMIC, NVIDIA RTX 3080), with `vkms` loaded while logged in: COSMIC
-    added it as `Virtual-1`, to the right of the monitor, with its own panel and dock. A screen
-    capture of it showed the desktop, and it cost about 2% of one CPU core.
+  - Tested on Pop!_OS 24.04 (COSMIC, NVIDIA RTX 3080): loaded at boot, COSMIC adds it as
+    `Virtual-1`, to the right of the monitor, with its own panel and dock, and `awake display`
+    changes its size. A screen capture of it showed the desktop, and it cost about 2% of one CPU
+    core. Not tested yet: no monitor attached at all, Sunshine streaming it, GNOME and KDE.
+  - If you turn it off in Settings > Displays, COSMIC remembers that, also after restarts:
+    `awake display` says so, and you turn it back on there.
   - **Careful on COSMIC:** turning the virtual display off and straight back on (with `cosmic-randr`)
     froze the whole desktop in testing, and only a restart fixed it. So awake never turns it on or
     off itself.

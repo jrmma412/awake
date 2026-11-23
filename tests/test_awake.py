@@ -582,28 +582,50 @@ case "$1" in
     done
     echo '  }'
     echo '}';;
-  mode) echo "$en $5 $6" > "@STATE@";;          # mode --refresh HZ NAME W H
+  mode) echo "true $5 $6" > "@STATE@";;         # mode --refresh HZ NAME W H (like COSMIC, it also turns it on)
   enable) echo "true $w $h" > "@STATE@";;
   disable) echo "false $w $h" > "@STATE@";;
 esac
 """
 
 
-def fake_vkms(tmp_path, loaded=True, connected=True, boot=False, enabled=True, mode=(1024, 768), answer=True):
+_VKMS_LOGS = []   # every fake_vkms() log, checked after each test
+
+
+@pytest.fixture(autouse=True)
+def _display_never_runs_sudo_or_switches_the_display():
+    """For every display test: awake never ran sudo, and never switched the virtual display on or off
+    (cosmic-randr enable/disable once froze COSMIC)."""
+    yield
+    while _VKMS_LOGS:
+        for ln in randr_calls(_VKMS_LOGS.pop()):
+            assert not re.match(r"sudo |cosmic-randr (enable|disable)\b", ln), ln
+
+
+def fake_vkms(tmp_path, loaded=True, connected=True, boot=False, enabled=True, mode=(1024, 768), answer=True,
+              desktop="COSMIC", cosmic_running=True, has_driver=True, vm_screen=False, sysfs_on=True):
     """A stand-in kernel (the sysfs bits awake reads), a modules-load.d folder, and a cosmic-randr
-    that keeps the virtual display's state in a file. Paths match the AWAKE_* defaults in run()."""
+    that keeps the virtual display's state in a file. Paths match the AWAKE_* defaults in run().
+    vm_screen adds a VM's own screen, which is also called Virtual-1 but isn't vkms."""
     drm = tmp_path / "sys-class-drm"
     devices = tmp_path / "sys-devices"
     (devices / "faux" / "vkms").mkdir(parents=True)
     (devices / "pci0").mkdir()
-    for card, dev in [("card0", devices / "faux" / "vkms"), ("card1", devices / "pci0")]:
+    (devices / "pci1").mkdir()
+    vk, gpu = ("card1", "card2") if vm_screen else ("card0", "card1")
+    cards = [(vk, devices / "faux" / "vkms"), (gpu, devices / "pci0")]
+    conns = [(vk + "-Virtual-1", "connected" if connected else "disconnected", sysfs_on),
+             (vk + "-Writeback-1", "unknown", False), (gpu + "-DP-3", "connected", True)]
+    if vm_screen:   # listed first, so awake has to check which driver each screen belongs to
+        cards.append(("card0", devices / "pci1"))
+        conns.append(("card0-Virtual-1", "connected", True))
+    for card, dev in cards:
         (drm / card).mkdir(parents=True)
         (drm / card / "device").symlink_to(dev)
-    for conn, status in [("card0-Virtual-1", "connected" if connected else "disconnected"),
-                         ("card0-Writeback-1", "unknown"), ("card1-DP-3", "connected")]:
+    for conn, status, on in conns:
         (drm / conn).mkdir()
         (drm / conn / "status").write_text(status + "\n")
-        (drm / conn / "enabled").write_text("enabled\n")
+        (drm / conn / "enabled").write_text("enabled\n" if on else "disabled\n")
     if loaded:
         (tmp_path / "sys-module-vkms").mkdir()
     boot_file = tmp_path / "modules-load.d" / "awake-vdisplay.conf"
@@ -618,9 +640,15 @@ def fake_vkms(tmp_path, loaded=True, connected=True, boot=False, enabled=True, m
     randr = FAKE_RANDR.replace("@CALLS@", str(calls)).replace("@STATE@", str(state))
     (fake / "cosmic-randr").write_text(randr.replace("@ANSWER@", "" if answer else "exec sleep 30"))
     (fake / "sudo").write_text('#!/bin/sh\necho "sudo $*" >> "%s"\nexit 1\n' % calls)
+    (fake / "pgrep").write_text('#!/bin/sh\ncase "$*" in *cosmic-comp*) exit %d;; esac\nexit 1\n'
+                                % (0 if cosmic_running else 1))
+    (fake / "modinfo").write_text('#!/bin/sh\n[ "$*" = "-n vkms" ] && [ %s = yes ] && echo /lib/modules/test/vkms.ko\n'
+                                  % ("yes" if has_driver else "no"))
     for f in fake.iterdir():
         f.chmod(0o755)
-    env = {"PATH": "%s:%s" % (fake, os.environ["PATH"]), "WAYLAND_DISPLAY": "wayland-test"}
+    env = {"PATH": "%s:%s" % (fake, os.environ["PATH"]), "WAYLAND_DISPLAY": "wayland-test",
+           "XDG_CURRENT_DESKTOP": desktop}
+    _VKMS_LOGS.append(calls)
     return env, calls, state, boot_file
 
 
@@ -647,7 +675,16 @@ def test_linux_display_set_up_waits_for_the_restart(tmp_path):
     r = run([LINUX, "display"], tmp_path, env=env)
     assert r.returncode == 0 and "starts at the next restart" in r.stdout, r.stdout
     assert "display: set up; it starts at the next restart" in run([LINUX, "status"], tmp_path, env=env).stdout
+    r = run([LINUX, "display", "2560x1600"], tmp_path, env=env)   # a size can't be set until then: say so
+    assert r.returncode == 0 and "Run 'awake display 2560x1600' again after the restart" in r.stdout, r.stdout
     assert not calls.exists()
+
+
+@linux_only
+def test_linux_display_kernel_without_vkms(tmp_path):
+    env, calls, _, boot_file = fake_vkms(tmp_path, loaded=False, has_driver=False)
+    r = run([LINUX, "display"], tmp_path, env=env)
+    assert r.returncode == 1 and "no vkms driver" in r.stdout and "sudo" not in r.stdout, r.stdout
 
 
 @linux_only
@@ -666,6 +703,7 @@ def test_linux_display_sets_1080p_and_never_switches_it(tmp_path):
 @linux_only
 def test_linux_display_keeps_a_size_you_chose(tmp_path):
     env, calls, state, _ = fake_vkms(tmp_path, mode=(2560, 1600))
+    env["LC_ALL"] = "de_DE.UTF-8"   # a decimal-comma locale (where installed) still prints 59.99
     r = run([LINUX, "display"], tmp_path, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "2560x1600 @ 59.99 Hz, until the next restart" in r.stdout
@@ -703,6 +741,15 @@ def test_linux_display_turned_off_in_cosmic_is_left_to_you(tmp_path):
 
 
 @linux_only
+def test_linux_display_size_for_a_display_turned_off_is_left_to_you(tmp_path):
+    env, calls, state, _ = fake_vkms(tmp_path, enabled=False, mode=(1920, 1080))
+    r = run([LINUX, "display", "2560x1600"], tmp_path, env=env)   # setting a mode would also turn it on
+    assert r.returncode == 1 and "turned off in COSMIC's display settings" in r.stdout, r.stdout
+    assert state.read_text().split() == ["false", "1920", "1080"]
+    assert not any(" mode " in ln for ln in randr_calls(calls))
+
+
+@linux_only
 def test_linux_display_off_prints_the_removal_and_changes_nothing(tmp_path):
     env, calls, state, boot_file = fake_vkms(tmp_path, boot=True, mode=(1920, 1080))
     r = run([LINUX, "display", "off"], tmp_path, env=env)
@@ -715,9 +762,16 @@ def test_linux_display_off_prints_the_removal_and_changes_nothing(tmp_path):
 @linux_only
 def test_linux_display_off_names_other_files_that_load_vkms(tmp_path):
     env, calls, _, boot_file = fake_vkms(tmp_path)
-    (boot_file.parent / "modules.conf").write_text("lp\nvkms\n")
+    other = boot_file.parent / "my modules.conf"   # a space in the name: still one file
+    other.write_text("lp\nvkms\n")
     r = run([LINUX, "display", "off"], tmp_path, env=env)
-    assert "remove its 'vkms' line" in r.stdout and "sudo rm" not in r.stdout, r.stdout
+    out = r.stdout.splitlines()
+    assert "vkms is loaded at boot by %s: remove its 'vkms' line (as root), then restart." % other in out, r.stdout
+    assert "sudo rm" not in r.stdout and "Run this yourself" not in r.stdout, r.stdout
+    boot_file.write_text("vkms\n")   # awake's own file too: its sudo rm, and the other one "also" loads it
+    out = run([LINUX, "display", "off"], tmp_path, env=env).stdout.splitlines()
+    assert out[1:3] == ["Run this yourself, then restart the PC:", "  sudo rm %s" % boot_file], out
+    assert "vkms is also loaded at boot by %s: remove its 'vkms' line (as root), then restart." % other in out, out
 
 
 @linux_only
@@ -728,11 +782,14 @@ def test_linux_display_off_when_not_set_up(tmp_path):
 
 
 @linux_only
-def test_linux_display_on_another_desktop(tmp_path):
-    env, calls, _, _ = fake_vkms(tmp_path)
-    runtime = tmp_path / "runtime"   # no Wayland socket: not COSMIC (or no desktop running)
-    runtime.mkdir()
-    env.update(WAYLAND_DISPLAY="", XDG_RUNTIME_DIR=str(runtime))
+@pytest.mark.parametrize("how", ["no desktop", "GNOME", "SSH, COSMIC not running"])
+def test_linux_display_on_another_desktop(tmp_path, how):
+    kw = {"GNOME": dict(desktop="ubuntu:GNOME"), "SSH, COSMIC not running": dict(desktop="", cosmic_running=False)}
+    env, calls, _, _ = fake_vkms(tmp_path, **kw.get(how, {}))
+    if how == "no desktop":
+        runtime = tmp_path / "runtime"   # no Wayland socket to talk to
+        runtime.mkdir()
+        env.update(WAYLAND_DISPLAY="", XDG_RUNTIME_DIR=str(runtime))
     r = run([LINUX, "display"], tmp_path, env=env)
     assert r.returncode == 0 and "isn't COSMIC" in r.stdout, r.stdout
     assert "display: ON (virtual display Virtual-1, until the next restart)" in r.stdout   # from sysfs
@@ -756,12 +813,23 @@ def test_linux_display_finds_the_desktop_from_ssh(tmp_path):
     sock = socket.socket(socket.AF_UNIX)
     sock.bind(str(runtime / "wayland-1"))
     try:
-        env.update(WAYLAND_DISPLAY="", XDG_RUNTIME_DIR=str(runtime))
+        env.update(WAYLAND_DISPLAY="", XDG_RUNTIME_DIR=str(runtime), XDG_CURRENT_DESKTOP="")   # COSMIC found by its process
         r = run([LINUX, "display", "status"], tmp_path, env=env)
     finally:
         sock.close()
     assert "display: ON (virtual display Virtual-1, 1920x1080 @ 60 Hz" in r.stdout, r.stdout
     assert randr_calls(calls)[0].endswith("WAYLAND_DISPLAY=wayland-1")
+
+
+@linux_only
+@pytest.mark.parametrize("on", [True, False])
+def test_linux_display_reads_its_own_card_next_to_a_vm_screen(tmp_path, on):
+    # A VM's own screen can also be called Virtual-1: only the vkms one says whether the virtual display is on.
+    env, calls, _, _ = fake_vkms(tmp_path, vm_screen=True, sysfs_on=on, desktop="GNOME")
+    out = run([LINUX, "display", "status"], tmp_path, env=env).stdout
+    assert out == ("display: ON (virtual display Virtual-1, until the next restart)\n" if on else
+                   "display: OFF (virtual display Virtual-1 is connected but not in use; "
+                   "turn it on in your display settings)\n"), out
 
 
 @linux_only
