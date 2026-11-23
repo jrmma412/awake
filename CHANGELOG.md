@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.14.0 (2026-11-23)
+
+Linux only. On macOS nothing works differently: the script changes only its version number, and the
+installer and Homebrew formula just point at the new release. (On macOS `awake on` still stops at a
+restart.)
+
+### Added
+- Linux keep-awake comes back after a restart. `awake on` (also `awake 2h`, `awake until 5pm`,
+  `awake toggle`, `awake all`) adds a login entry, `~/.config/autostart/awake-on.desktop` (XDG
+  autostart, run at login by COSMIC, GNOME, KDE and most desktops). It runs `awake _resume`, which
+  turns keep-awake back on, with the same end time if it had a timer, or not at all if that time
+  has passed (then it removes the entry).
+  - `awake off` (also `toggle`, `all off`, `uninstall`) removes the entry.
+  - `awake status` adds "also after restarts". If keep-awake isn't running but will come back at
+    the next login, it says `OFF (it turns back on at your next login; 'awake off' stops that)`.
+  - Running `awake on` while it's already on (say, turned on by 1.13.0) adds the entry and keeps
+    the timer it has.
+
+### Decisions
+- An XDG autostart entry rather than a systemd user service: the keep-screen-on request has to come
+  from inside the desktop session, and autostart works on desktops that don't use systemd for the
+  session too. The helper runs in the foreground of the login entry (same process), so however a
+  desktop starts login entries, it can't end it early.
+- At login the helper waits up to a minute for the desktop's screen-saver service
+  (`org.freedesktop.ScreenSaver` or GNOME's session manager), which may start after the login
+  entries. `awake status` shows it on while it waits.
+- If awake's path has characters that can't go safely into the entry's `Exec` line, or awake isn't
+  executable, `awake on` still turns on and says it won't come back after a restart. The entry has
+  `TryExec`, so desktops skip it if awake is moved or deleted.
+- An entry turned off in a desktop's startup-apps settings (`Hidden=true`,
+  `X-GNOME-Autostart-enabled=false`) stays off, even after `awake on` again, and status doesn't
+  claim it comes back. Desktops that don't run login entries (some tiling window managers) won't
+  bring it back.
+- Jiggle still stops at a restart.
+- Security: with automatic login, the PC now starts up with no auto-lock until `awake off`. The
+  README says so.
+
+### Review
+- Independent review before release. Fixed from it:
+  - `awake off` in the first moments of a login could be undone, leaving keep-awake on with no
+    timer. The login entry checked the saved state before taking the lock; it now checks again
+    once it has it.
+  - In the moment before the helper names itself, `awake off` or `awake on` didn't see it, and it
+    then wrote its pid file back (on again, or a second helper left running). At login the helper
+    now gives up if its pid file is no longer its own, after the wait and before it writes.
+  - Status claimed "also after restarts" for an entry turned off in startup-apps settings, and
+    `awake on` again turned it back on. Both are fixed, and the entry now has `TryExec` plus a check
+    that awake is executable.
+  - The wait uses a monotonic clock, so a clock change at login doesn't stretch it.
+  - Tests: the stand-in helper now waits at login like the real one. A new test runs the real
+    helper on a private D-Bus session, where a stand-in screen-saver service appears after 1.5 s.
+
+### Testing status
+- pytest on Linux: 101 passed, 15 skipped (macOS-only). The new tests run awake with a stand-in
+  helper (a fake `python3`), so nothing asks the real desktop for anything. They cover:
+  - on, a restart, then logging in, with the entry's own process becoming the helper
+  - a timed session that comes back before its end, and stays off after it
+  - `awake on` while it's already on
+  - toggle, `all off` and uninstall removing the entry
+  - `awake off` during the login wait, and just before the login entry takes the lock
+  - an entry turned off in startup-apps settings
+  - a path that can't go into the entry, and a copy of awake that isn't executable
+  - a helper that fails to start adding no entry
+- The real helper (skipped where `/usr/bin/python3` has no PyGObject or there's no
+  `dbus-run-session`): on a private D-Bus session, with no system bus so it never touches logind,
+  it waits for the screen-saver service, goes on soon after it appears, and holds the screen. If its
+  pid file is taken away while it waits, it gives up and writes nothing back.
+- 21 deliberate bugs put back into the script one at a time (each review fix undone, and the
+  earlier set): each made at least one test fail.
+- Live on Pop!_OS 24.04 (COSMIC):
+  - `awake on` while it was on added the entry.
+  - Stopping the helper, as a restart does, made status say it turns back on at the next login.
+  - Running the entry's command brought it back, holding `screen:freedesktop` and `sleep:logind`
+    (`systemd-inhibit --list` showed it).
+- Not tested yet: a real restart and login (COSMIC's autostart itself), GNOME and KDE.
+
 ## 1.13.0 (2026-11-23)
 
 Linux only. On macOS nothing works differently: the script changes only its version number, and the

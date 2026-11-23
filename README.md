@@ -283,7 +283,14 @@ All the commands above work the same (`awake 2h`, `awake until 5pm`, `awake jigg
 - **Keep awake** asks the desktop not to blank the screen, lock or suspend (the request a
   video player makes: `org.freedesktop.ScreenSaver`, GNOME's session manager, KDE's power
   management) and takes a systemd sleep lock. No setting is changed, so there is nothing to
-  restore: when awake stops for any reason (off, timer, crash, reboot) your normal settings apply.
+  restore: when awake stops (off, timer, crash, logout, restart) your normal settings apply.
+- **Keep awake comes back after a restart** (unlike on macOS). `awake on`, `awake 2h` and
+  `awake until 5pm` add a login entry, `~/.config/autostart/awake-on.desktop`, which COSMIC,
+  GNOME, KDE and most desktops run when you log in. It turns keep-awake back on, unless its timer
+  ran out in the meantime. `awake off` removes it, and `awake status` says
+  "also after restarts" while it's there. If you turn the entry off in your desktop's startup-apps
+  settings, awake leaves it off. Desktops that don't run login entries (some tiling window
+  managers) won't bring it back. Jiggle doesn't come back; agent mode always did.
 - **Jiggle** moves the pointer with a virtual mouse (`/dev/uinput`), the only way to do it on
   Wayland, and only when the desktop reports you idle (Wayland idle notifications, or GNOME's
   idle monitor). You need permission to use `/dev/uinput`: Steam's controller support already
@@ -327,7 +334,9 @@ All the commands above work the same (`awake 2h`, `awake until 5pm`, `awake jigg
   - Sunshine streams the display picked in COSMIC's screen-sharing dialog, so it has to be pointed at
     `Virtual-1` to stream the virtual display.
 - **No menu bar icon yet** (`awake menubar` is macOS-only).
-- **Security:** the same notes apply (no auto-lock while on; jiggle hides your idle time).
+- **Security:** the same notes apply (no auto-lock while on; jiggle hides your idle time). Since
+  keep-awake comes back after a restart, with automatic login the PC starts up unlocked and stays
+  that way until `awake off`.
   `/dev/uinput` access lets any program you run create virtual input devices.
 
 ## What it does
