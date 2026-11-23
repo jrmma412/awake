@@ -305,7 +305,28 @@ All the commands above work the same (`awake 2h`, `awake until 5pm`, `awake jigg
   the lid locks the screen instead of suspending (on battery it still suspends), plus the command
   to undo it. It only reads and never runs `sudo` itself. `awake status` mentions that file while
   it exists, and says if logind isn't using it. On a desktop PC it says there is no lid.
-- **No menu bar icon or virtual display yet** (`awake menubar` and `awake display` are macOS-only).
+- **Virtual display (`awake display`)** gives the PC a screen when no monitor is attached (or the
+  monitor is off), so you can still reach it over Moonlight/Sunshine or remote desktop without an
+  HDMI dummy plug. It uses the Linux kernel's own `vkms` driver instead of vdisplay (which is
+  macOS-only). Loading a driver needs root, so, as with `awake clamshell`, `awake display` prints
+  the one `sudo` command that loads `vkms` at every boot (it adds
+  `/etc/modules-load.d/awake-vdisplay.conf`), and then you restart. After that, on COSMIC,
+  `awake display` sets it to 1920x1080, or to another size it offers (`awake display 2560x1600`),
+  and COSMIC remembers it. On other desktops, set its size in the display settings.
+  `awake display off` prints how to remove it (root and a restart again). `awake status` shows it
+  once it's set up, and `awake uninstall` leaves the boot setting in place.
+  - Tested on Pop!_OS 24.04 (COSMIC, NVIDIA RTX 3080): loaded at boot, COSMIC adds it as
+    `Virtual-1`, to the right of the monitor, with its own panel and dock, and `awake display`
+    changes its size. A screen capture of it showed the desktop, and it cost about 2% of one CPU
+    core. Not tested yet: no monitor attached at all, Sunshine streaming it, GNOME and KDE.
+  - If you turn it off in Settings > Displays, COSMIC remembers that, also after restarts:
+    `awake display` says so, and you turn it back on there.
+  - **Careful on COSMIC:** turning the virtual display off and straight back on (with `cosmic-randr`)
+    froze the whole desktop in testing, and only a restart fixed it. So awake never turns it on or
+    off itself.
+  - Sunshine streams the display picked in COSMIC's screen-sharing dialog, so it has to be pointed at
+    `Virtual-1` to stream the virtual display.
+- **No menu bar icon yet** (`awake menubar` is macOS-only).
 - **Security:** the same notes apply (no auto-lock while on; jiggle hides your idle time).
   `/dev/uinput` access lets any program you run create virtual input devices.
 

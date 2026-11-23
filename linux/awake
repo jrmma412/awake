@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # awake - keep your Linux PC awake with the screen on (the Linux version of awake for macOS).
 # Run `awake help` for usage.
-VERSION=1.12.0
+VERSION=1.13.0
 D=$HOME/.awake
 PIDF=$D/pid; UNTIL=$D/until; HELD=$D/held; ERRF=$D/err
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
@@ -13,6 +13,11 @@ COSMIC_IDLE=$CONF/cosmic/com.system76.CosmicIdle/v1
 AGENT_UNIT=awake-agent.service
 AGENT_UNIT_FILE=$CONF/systemd/user/$AGENT_UNIT
 LID_CONF=${AWAKE_LID_CONF:-/etc/systemd/logind.conf.d/awake-lid.conf}   # the override is for the tests
+VD_BOOT=${AWAKE_VD_BOOT:-/etc/modules-load.d/awake-vdisplay.conf}       # virtual display; these four
+VKMS=${AWAKE_VKMS:-/sys/module/vkms}                                     # overrides are for the tests too
+DRM=${AWAKE_DRM:-/sys/class/drm}
+MODULES=${AWAKE_MODULES:-/lib/modules}
+VD_SIZE=1920x1080
 mkdir -p "$D" && chmod 700 "$D"
 
 usage() {
@@ -37,6 +42,11 @@ awake - keep your Linux PC awake with the screen on
   awake agent        (optional) always-on mode for servers/agents: the system never suspends while
                      plugged in, also after restarts, but the screen turns off and locks normally.
                      "awake agent off" removes it, "awake agent status" shows it
+  awake display      (optional) a virtual display, so the PC runs with no monitor (or the monitor off) and
+                     can still be reached over Moonlight/Sunshine or remote desktop, without an HDMI dummy
+                     plug. Uses the Linux kernel's vkms driver: prints the sudo command to set it up once
+                     (then restart). "awake display 2560x1600" sets its size on COSMIC,
+                     "awake display off" shows how to remove it, "awake display status" shows it
   awake clamshell    will closing the lid suspend this laptop? Shows the lid settings, and prints the
                      command to keep it running with the lid closed while plugged in (and to undo it).
                      Only reads; you run the printed sudo command yourself
@@ -218,6 +228,7 @@ show_status() {
     echo "OFF"
   fi
   jiggle_running && jiggle_status
+  { vd_loaded || [[ -n $(vd_boot_files) ]]; } && display_line   # only once the virtual display is set up
   # Easy to forget once set: mention the lid setting 'awake clamshell' told you how to make,
   # and whether logind is really using it.
   if [[ -f $LID_CONF ]]; then
@@ -556,6 +567,180 @@ clamshell() {
   fi
 }
 
+# ---- optional virtual display: awake display [on [WIDTHxHEIGHT]|off|status] ----
+# A virtual screen, so the PC can run with no monitor (or with the monitor off) and still be used over
+# Moonlight/Sunshine, remote desktop or SSH, like an HDMI dummy plug. It comes from the Linux kernel's
+# own vkms driver. Loading a driver needs root, so, as with 'awake clamshell', awake never runs sudo:
+# it prints the one command that loads vkms at every boot. On COSMIC, awake then sets the display's
+# size with cosmic-randr, and COSMIC remembers it.
+# awake never switches the display off or on while the desktop runs: in testing (COSMIC on Pop!_OS
+# 24.04, Nov 2026) turning it off and straight back on with cosmic-randr froze the whole desktop.
+vd_loaded() { [[ -d $VKMS ]]; }
+vd_boot_files() { grep -lsxE '[[:space:]]*vkms[[:space:]]*' "${VD_BOOT%/*}"/*.conf; }   # what loads vkms at boot
+vd_connector() {   # the vkms display's sysfs folder (e.g. .../card1-Virtual-1), if the kernel shows it connected
+  local c base dev
+  for c in "$DRM"/card*-*; do
+    base=${c##*/}
+    dev=$(readlink -f "$DRM/${base%%-*}/device" 2>/dev/null)
+    [[ ${dev##*/} == vkms && $(cat "$c/status" 2>/dev/null) == connected ]] || continue
+    echo "$c"; return 0
+  done
+  return 1
+}
+vd_name() { local b=${1##*/}; echo "${b#*-}"; }   # .../card1-Virtual-1 -> Virtual-1
+# Is the desktop COSMIC? Its compositor running counts too: from SSH there's no XDG_CURRENT_DESKTOP, and
+# some people set it to something else on COSMIC (for app theming).
+on_cosmic() { [[ ${XDG_CURRENT_DESKTOP^^} == *COSMIC* ]] || pgrep -xu "$UID" cosmic-comp >/dev/null; }
+# cosmic-randr reaches the desktop through its Wayland socket; find that when run from SSH or a service.
+wl_env() {
+  [[ -n ${WAYLAND_DISPLAY:-} ]] && return 0
+  local rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
+  for s in "$rt"/wayland-[0-9]*; do
+    [[ -S $s ]] && { export XDG_RUNTIME_DIR=$rt WAYLAND_DISPLAY=${s##*/}; return 0; }
+  done
+  return 1
+}
+# What COSMIC reports for display $1. Sets VD_EN (enabled/disabled), VD_W VD_H VD_R (current size and
+# refresh in mHz) and VD_PW VD_PH (the driver's preferred size). On failure VD_WHY says why: other (not
+# COSMIC, or no desktop to talk to), noanswer (COSMIC didn't answer) or missing (COSMIC doesn't list it).
+vd_read() {
+  VD_KDL="" VD_WHY=other
+  command -v cosmic-randr >/dev/null && on_cosmic && wl_env || return 1
+  VD_WHY=noanswer
+  VD_KDL=$(timeout 5 cosmic-randr list --kdl 2>/dev/null) && [[ -n $VD_KDL ]] || return 1
+  VD_WHY=missing
+  local line
+  line=$(awk -v n="\"$1\"" '
+    $1 == "output" { cur = ($2 == n); if (cur) { found = 1; en = ($3 ~ /#true/) ? "enabled" : "disabled" } next }
+    cur && $1 == "mode" {
+      if ($0 ~ /current=#true/) { w = $2; h = $3; r = $4 }
+      if ($0 ~ /preferred=#true/) { pw = $2; ph = $3 } }
+    END { if (!found) exit 1; print en, w + 0, h + 0, r + 0, pw + 0, ph + 0 }' <<<"$VD_KDL") || return 1
+  read -r VD_EN VD_W VD_H VD_R VD_PW VD_PH <<<"$line"
+}
+vd_best() {   # vd_best NAME W H: the highest refresh (mHz) COSMIC offers for that size
+  awk -v n="\"$1\"" -v w="$2" -v h="$3" '
+    $1 == "output" { cur = ($2 == n); next }
+    cur && $1 == "mode" && $2 == w && $3 == h && $4 + 0 > best { best = $4 + 0 }
+    END { if (!best) exit 1; print best }' <<<"$VD_KDL"
+}
+vd_sizes() {  # the sizes COSMIC offers for display $1, as COSMIC lists them (largest first)
+  awk -v n="\"$1\"" '
+    $1 == "output" { cur = ($2 == n); next }
+    cur && $1 == "mode" && !seen[$2 "x" $3]++ { printf "%s%s", sep, $2 "x" $3; sep = " " }' <<<"$VD_KDL"
+}
+hz() {   # mHz to Hz, rounded: 59940 -> 59.94, 60000 -> 60 (whole numbers, so any locale prints a dot)
+  local c=$(( ($1 + 5) / 10 )) f
+  f=$(printf %02d $(( c % 100 ))); f=${f%0}; f=${f%0}
+  echo "$(( c / 100 ))${f:+.$f}"
+}
+display_usage() { echo "usage: awake display [on [WIDTHxHEIGHT]|off|status]"; }
+
+display_line() {   # one line about the virtual display, for 'awake status' and 'awake display status'
+  local dir name boot=", also after restarts"
+  [[ -n $(vd_boot_files) ]] || boot=", until the next restart"
+  if ! vd_loaded; then
+    if [[ -n $(vd_boot_files) ]]; then echo "display: set up; it starts at the next restart (when the vkms driver loads)"
+    else echo "display: not set up (add it with 'awake display')"; fi
+    return 0
+  fi
+  if ! dir=$(vd_connector); then echo "display: the vkms driver is loaded but shows no virtual display (see 'awake display')"; return 0; fi
+  name=$(vd_name "$dir")
+  if vd_read "$name"; then
+    if [[ $VD_EN == enabled ]]; then echo "display: ON (virtual display $name, ${VD_W}x${VD_H} @ $(hz "$VD_R") Hz${boot})"
+    else echo "display: OFF (virtual display $name is turned off in COSMIC's display settings)"; fi
+  elif [[ $(cat "$dir/enabled" 2>/dev/null) == enabled ]]; then echo "display: ON (virtual display $name${boot})"
+  else echo "display: OFF (virtual display $name is connected but not in use; turn it on in your display settings)"; fi
+}
+
+display_on() {
+  local size=${1:-} dir name w h r mi
+  if [[ -n $size && ! $size =~ ^[1-9][0-9]{2,4}x[1-9][0-9]{2,4}$ ]]; then display_usage; return 1; fi
+  if ! vd_loaded; then
+    if [[ -n $(vd_boot_files) ]]; then
+      echo "awake: the virtual display is set up. It starts at the next restart, when the vkms driver loads."
+      [[ -z $size ]] || echo "Run 'awake display $size' again after the restart to set its size."
+      return 0
+    fi
+    # (only when this kernel's module folder exists: after a kernel update without a restart it may be gone)
+    mi=$(PATH=$PATH:/usr/sbin:/sbin command -v modinfo)
+    if [[ -n $mi && -d $MODULES/$(uname -r) ]] && ! "$mi" -n vkms >/dev/null 2>&1; then
+      echo "awake: this Linux kernel has no vkms driver, which the virtual display comes from."
+      echo "Some distributions put it in a separate package of extra kernel drivers."
+      return 1
+    fi
+    echo "awake: the virtual display comes from the Linux kernel's vkms driver, which only root can set up."
+    echo "Run this yourself (it loads vkms at every boot), restart the PC, then run 'awake display' again:"
+    echo "  echo vkms | sudo tee $VD_BOOT"
+    echo "To remove it later: sudo rm $VD_BOOT, then restart."
+    return 1
+  fi
+  if ! dir=$(vd_connector); then
+    echo "awake: the vkms driver is loaded but shows no virtual display (was it loaded with create_default_dev=0?). Restart the PC to load it normally."
+    return 1
+  fi
+  name=$(vd_name "$dir")
+  if ! vd_read "$name"; then
+    case $VD_WHY in
+      noanswer) echo "awake: COSMIC didn't answer (cosmic-randr list), so the size of virtual display $name wasn't checked"; return 1;;
+      missing)  echo "awake: COSMIC doesn't list virtual display $name yet; try again in a moment"; return 1;;
+    esac
+    echo "awake: virtual display $name is there. This desktop isn't COSMIC (or isn't running), so set its size in your display settings."
+    display_line; return 0
+  fi
+  if [[ $VD_EN != enabled ]]; then
+    echo "awake: virtual display $name is turned off in COSMIC's display settings. Turn it on there (Settings > Displays)."
+    echo "awake doesn't switch it on itself: turning it off and straight back on froze COSMIC in testing."
+    return 1
+  fi
+  # A size you asked for, or 1920x1080 while it still has the driver's own default (1024x768).
+  if [[ -n $size ]] || [[ $VD_W == "$VD_PW" && $VD_H == "$VD_PH" ]]; then
+    size=${size:-$VD_SIZE}; w=${size%x*}; h=${size#*x}
+    if [[ $VD_W != "$w" || $VD_H != "$h" ]]; then
+      r=$(vd_best "$name" "$w" "$h") || { echo "awake: virtual display $name can't be $size. Sizes it offers: $(vd_sizes "$name")"; return 1; }
+      timeout 10 cosmic-randr mode --refresh "$(( r / 1000 )).$(printf %03d $(( r % 1000 )))" "$name" "$w" "$h" >/dev/null 2>&1 \
+        || { echo "awake: COSMIC could not set virtual display $name to $size"; return 1; }
+    fi
+  fi
+  display_line
+  if [[ -z $(vd_boot_files) ]]; then
+    echo "It goes away at the next restart. To keep it, run this yourself (it loads the vkms driver at every boot):"
+    echo "  echo vkms | sudo tee $VD_BOOT"
+  fi
+}
+
+display_off() {
+  local files f own="" others=()
+  files=$(vd_boot_files)
+  if [[ -z $files ]] && ! vd_loaded; then echo "awake: display: nothing to turn off (it isn't set up)"; return 0; fi
+  if vd_loaded; then echo "awake: the virtual display stays until the vkms driver is gone, which takes root and a restart."
+  else echo "awake: the virtual display isn't there yet: it starts at the next restart, when the vkms driver loads."; fi
+  while IFS= read -r f; do
+    [[ -z $f ]] && continue
+    if [[ $f == "$VD_BOOT" ]]; then own=$f; else others+=("$f"); fi
+  done <<<"$files"
+  if [[ -n $own ]]; then
+    if vd_loaded; then echo "Run this yourself, then restart the PC:"; else echo "To cancel it, run this yourself:"; fi
+    echo "  sudo rm $own"
+  fi
+  for f in ${others[@]+"${others[@]}"}; do
+    echo "vkms is ${own:+also }loaded at boot by $f: remove its 'vkms' line (as root), then restart."
+  done
+  [[ -n $files ]] || echo "Nothing in ${VD_BOOT%/*} loads it at boot, so it should be gone after the next restart."
+  vd_loaded && echo "To hide it before then, turn it off in your display settings (on COSMIC: Settings > Displays)."
+  return 0
+}
+
+display() {
+  case ${1:-on} in
+    on)            [[ -z ${3:-} ]] || { display_usage; return 1; }; display_on "${2:-}";;
+    off)           [[ -z ${2:-} ]] || { display_usage; return 1; }; display_off;;
+    status)        [[ -z ${2:-} ]] || { display_usage; return 1; }; display_line;;
+    [1-9]*x[1-9]*) [[ -z ${2:-} ]] || { display_usage; return 1; }; display_on "$1";;
+    *)             display_usage; return 1;;
+  esac
+}
+
 # ---- awake all [time|off]: awake on + jiggle + agent mode in one go ----
 # Each part is still its own command (awake on / awake jiggle / awake agent), so any one can be
 # switched off alone. A part that cannot start (e.g. no virtual mouse permission for jiggle) is
@@ -596,6 +781,7 @@ uninstall() {
   [[ -f $AGENT_SAVED ]] && echo "  - remove agent mode and put back your suspend setting ($(fmt_suspend "$(<"$AGENT_SAVED")"))"
   [[ -f $AGENT_UNIT_FILE ]] && echo "  - remove agent mode (the always-on systemd user service)"
   [[ -f $LID_CONF ]] && echo "  - keep your lid setting $LID_CONF (remove it with: sudo rm $LID_CONF && sudo systemctl reload systemd-logind)"
+  [[ -f $VD_BOOT ]] && echo "  - keep the virtual display setting $VD_BOOT (remove it with: sudo rm $VD_BOOT, then restart)"
   echo "  - delete $self"
   echo "  - remove any PATH line awake added to ~/.bashrc / ~/.zshrc / ~/.profile"
   echo "  - delete ~/.awake (awake's state folder)"
@@ -896,7 +1082,7 @@ case $1 in
   toggle)     if running; then turn_off; else turn_on; fi;;
   status|st)  show_status;;
   menubar)    echo "awake: the menu bar icon is macOS-only for now; on Linux use the awake command";;
-  display)    echo "awake: the virtual display add-on (vdisplay) is macOS-only for now";;
+  display)    shift; display "$@";;
   clamshell)  clamshell "${2:-}";;
   agent)      agent "${2:-on}";;
   jiggle)     shift; jiggle "$@";;
