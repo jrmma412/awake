@@ -8,9 +8,17 @@ Status: notes only. Nothing here is implemented. Lid-closed behavior is **not ye
 - Suggests a real monitor flips the flag; the virtual display alone did not. Unconfirmed
   until tested with only the vdisplay attached.
 
+## Lid-closed results (2026-11-23)
+- Real monitor (LG via dock) + AC, lid closed ~30s: stayed awake. No Sleep/Wake in `pmset -g log`.
+- vdisplay only, battery 28%, lid closed ~3m: slept. Log: `Entering Sleep state due to 'Clamshell Sleep'`
+  at 00:38:38, woke at 00:41:52 on lid open. All caffeinate assertions were held and did not help.
+- vdisplay only, AC: NOT yet tested (do this next).
+- Note: `AppleClamshellCausesSleep` read "No" on battery with the dock detached, yet the Mac still slept.
+  So that flag is not reliable for predicting lid-close sleep with only a virtual display.
+
 ## Pending hardware tests
-1. Only vdisplay attached (KVM away), on AC: run `awake clamshell`.
-2. Close the lid ~20s on AC; check reachability (Screen Sharing / SSH).
+1. Charger plugged in directly (no dock/LG), only vdisplay attached: run `awake clamshell`.
+2. Close the lid ~60s on AC; read `pmset -g log` for 'Clamshell Sleep' (and try Screen Sharing).
 3. Try `displayplacer "id:<id> enabled:false"` on a spare monitor.
 
 ## Idea: `awake display only` / `awake display restore`
