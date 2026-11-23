@@ -2,7 +2,7 @@
 # awake - keep your Mac awake with the screen on (like caffeinate, plus screen saver handling).
 # Run `awake help` for usage.
 zmodload zsh/datetime
-VERSION=1.14.0
+VERSION=1.15.0
 D=$HOME/.awake
 PIDF=$D/pid; SAVED=$D/idleTime; UNTIL=$D/until
 JPID=$D/jiggle.pid; JUNTIL=$D/jiggle.until; JMODE=$D/jiggle.mode
@@ -42,6 +42,7 @@ awake - keep your Mac awake with the screen on
                      run the printed sudo command yourself
   awake all [time]   everything at once: keep awake + mouse jiggle + agent mode (agent mode has no timer;
                      it stays until "awake all off" or "awake agent off"). "awake all off" stops all three
+                     and leaves the virtual display alone; add --display to include it (on or off)
   awake uninstall    remove awake  (--all also removes SwiftBar; -y skips the question)
   awake help         this help
 
@@ -531,7 +532,8 @@ agent() {
     off)
       if [[ -f $AGENT_PLIST ]]; then
         launchctl bootout "gui/$UID/$AGENT_LABEL" 2>/dev/null
-        rm -f "$AGENT_PLIST" && echo "awake: agent mode removed (normal sleep settings apply again)"
+        rm -f "$AGENT_PLIST" && echo "awake: agent mode removed (normal sleep settings apply again)" \
+          || { echo "awake: could not remove $AGENT_PLIST"; return 1; }
       else
         echo "awake: agent mode is not installed"
       fi
@@ -646,8 +648,9 @@ display() {
 
 # ---- awake clamshell: lid-closed sleep state, and the command to change it ----
 # Read-only. Closing a MacBook's lid uses a different sleep path that caffeinate (awake on / agent)
-# cannot block. Only macOS's own clamshell mode (on power with an external display it counts) or
-# `pmset disablesleep 1` keeps it awake. awake never runs sudo: it prints the command for you to run.
+# cannot block. Only macOS's own clamshell mode (on power with a real external display or dummy plug)
+# or `pmset disablesleep 1` keeps it awake. Whether a software virtual display counts is untested.
+# awake never runs sudo: it prints the command for you to run.
 
 # A flag from the kernel power manager (IOPMrootDomain): yes / no / n/a.
 pm_flag() {
@@ -689,8 +692,9 @@ clamshell() {
     echo "  sudo pmset -a disablesleep 1      (undo: sudo pmset -a disablesleep 0)"
   else
     echo "Closing the lid will put this Mac to sleep. 'awake' and 'awake agent' can't stop that."
-    echo "(A virtual display from 'awake display' may count as a monitor here: turn it on, unplug other"
-    echo " displays, and run 'awake clamshell' again. If this line still says yes, use the command below.)"
+    echo "(A virtual display from 'awake display' is not known to count as a monitor for clamshell mode,"
+    echo " and may not on Apple Silicon. A real monitor or HDMI dummy plug does. If this still says yes"
+    echo " with the display on, use the command below.)"
     echo "To keep it awake with the lid closed (asks for your password; stops ALL system sleep until undone):"
     echo "  sudo pmset -a disablesleep 1"
     echo "To undo:"
@@ -703,21 +707,31 @@ clamshell() {
 # switched off alone. A part that cannot start (e.g. no Accessibility permission for jiggle) is
 # reported and the others still run.
 all() {
+  # --display (any position) also includes the virtual display add-on: 'all off --display' removes it,
+  # 'all --display' adds it. Without the flag the display is left exactly as it is.
+  local with_display=0 a; local -a rest=()
+  for a in "$@"; do [[ $a == --display ]] && with_display=1 || rest+=("$a"); done
+  set -- "${rest[@]}"
   [[ ${1:-} == on ]] && shift   # "awake all on [time]" is the same as "awake all [time]"
   local jmode=""                # "awake all random [time]" / "all simple": pick the jiggle mode in one go
   case ${1:-} in random|simple|normal) jmode=$1; shift;; esac
   local arg=${1:-} secs=""
   if [[ $arg == off || $arg == stop ]]; then
-    turn_off; jiggle_off
-    if [[ -f $AGENT_PLIST ]]; then agent off; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
-    echo "awake all: everything is off"
-    return 0
+    local rc=0
+    turn_off || rc=1; jiggle_off || rc=1
+    if [[ -f $AGENT_PLIST ]]; then agent off || rc=1; else echo "awake: agent mode: nothing to stop (it was never installed; add it with 'awake agent')"; fi
+    (( with_display )) && { display off || rc=1; }
+    if (( rc )); then echo "awake all: not everything could be turned off (see above); try 'awake all off' again"
+    elif (( with_display )); then echo "awake all: everything is off, including the virtual display"
+    else echo "awake all: everything is off"; fi
+    return $rc
   fi
-  if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [simple|random] [time|off]"; return 1; }; fi
+  if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [simple|random] [time|off] [--display]"; return 1; }; fi
   local rc=0 jg=" + jiggle"
   turn_on "$secs" || rc=1
   jiggle ${jmode:+"$jmode"} ${arg:+"$arg"} || { rc=1; jg=" (jiggle did not start)"; }
   agent on || rc=1
+  if (( with_display )); then display on || { rc=1; echo "awake all: the virtual display did not start"; }; fi
   echo
   echo "awake all: on${jg}${jmode:+ ($jmode)}${secs:+, timer $(human $secs)}; agent mode stays on until 'awake all off' or 'awake agent off'"
   return $rc

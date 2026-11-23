@@ -570,6 +570,83 @@ def test_mac_clamshell_only_reads(tmp_path):
 
 
 @mac_only
+def test_mac_clamshell_does_not_claim_virtual_display_counts(tmp_path):
+    """With lid-sleep reported, the hint must not promise a virtual display fixes it."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "ioreg").write_text(
+        '#!/bin/sh\necho \'"AppleClamshellState" = No\'\necho \'"AppleClamshellCausesSleep" = Yes\'\n'
+        'echo \'"SleepDisabled" = No\'\n')
+    (fake / "ioreg").chmod(0o755)
+    r = run([MAC, "clamshell"], tmp_path, env={"PATH": f"{fake}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Closing the lid will put this Mac to sleep" in r.stdout
+    assert "may count as a monitor" not in r.stdout
+    assert "not known to count" in r.stdout
+    assert "sudo pmset -a disablesleep 1" in r.stdout
+
+
+@mac_only
+def test_mac_all_off_leaves_display_alone(tmp_path):
+    """Plain `awake all off` never touches the virtual display."""
+    env, calls = fake_vdisplay(tmp_path, 0)
+    r = run([MAC, "all", "off"], tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "everything is off" in r.stdout and "virtual display" not in r.stdout
+    assert not calls.exists() or "vdisplay stop" not in calls.read_text()
+
+
+@mac_only
+@pytest.mark.parametrize("args", [["all", "off", "--display"], ["all", "--display", "off"],
+                                  ["all", "--display", "stop"]])
+def test_mac_all_off_display_flag_removes_display(tmp_path, args):
+    """`--display` (in any position) also stops the virtual display."""
+    env, calls = fake_vdisplay(tmp_path, 0)
+    r = run([MAC] + args, tmp_path, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "including the virtual display" in r.stdout
+    assert "vdisplay stop" in calls.read_text()
+
+
+@mac_only
+def test_mac_all_off_display_flag_without_vdisplay(tmp_path):
+    """`--display` with the add-on not installed says so and still turns the rest off."""
+    if Path("/opt/homebrew/bin/vdisplay").exists():
+        pytest.skip("vdisplay is really installed on this Mac")
+    r = run([MAC, "all", "off", "--display"], tmp_path, env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "display add-on is not installed" in r.stdout and "everything is off" in r.stdout
+
+
+@mac_only
+def test_mac_all_bad_time_usage_mentions_display(tmp_path):
+    r = run([MAC, "all", "bogus", "--display"], tmp_path)
+    assert r.returncode == 1 and "[--display]" in r.stdout
+
+
+@mac_only
+def test_mac_all_off_reports_failure(tmp_path):
+    """If a part can't be turned off, `awake all off` says so and exits 1, not 'everything is off'."""
+    la = tmp_path / "Library" / "LaunchAgents"
+    la.mkdir(parents=True)
+    (la / "com.jrmma412.awake.agent.plist").write_text("<plist/>")
+    la.chmod(0o500)   # rm of the plist now fails
+    try:
+        r = run([MAC, "all", "off"], tmp_path)
+    finally:
+        la.chmod(0o700)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "not everything could be turned off" in r.stdout
+    assert "everything is off" not in r.stdout
+
+
+@mac_only
+def test_mac_all_off_ok_exits_zero(tmp_path):
+    r = run([MAC, "all", "off"], tmp_path)
+    assert r.returncode == 0 and "awake all: everything is off" in r.stdout
+
+
+@mac_only
 def test_mac_clamshell_bad_argument(tmp_path):
     r = run([MAC, "clamshell", "on"], tmp_path)
     assert r.returncode == 1 and "usage: awake clamshell" in r.stdout

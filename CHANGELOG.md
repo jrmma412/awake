@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.15.0 (2026-11-23)
+
+macOS changes. On Linux nothing works differently: `linux/awake` changes only its version number, and
+the installers and Homebrew formula point at the new release.
+
+### Added
+- macOS `awake all --display` / `awake all off --display`: optionally include the virtual display add-on
+  when turning everything on or off (flag works in any position). Plain `awake all off` still leaves
+  the display alone, so existing setups don't change. Tests use a fake vdisplay.
+
+### Changed
+- macOS `awake all off` now says "not everything could be turned off" and exits 1 when a part fails
+  (agent mode's plist couldn't be removed), instead of always printing "everything is off" and exiting 0.
+  Matches Linux 1.12.0. `awake agent off` also exits 1 in that case.
+- macOS `awake clamshell`, README: no longer says a virtual display counts for clamshell mode.
+  On an M1 Pro (macOS 26.7.3) with the vdisplay online and the lid open, macOS still reported
+  that closing the lid would sleep the Mac. Wording now says it's unconfirmed and points to
+  `pmset disablesleep 1`.
+
+### Testing status
+- Lid closed on an M1 Pro, macOS 26.7.3: a real monitor on AC stayed awake; the vdisplay alone on
+  battery slept ("Clamshell Sleep"). vdisplay alone on AC: still to test.
+
 ## 1.14.0 (2026-11-23)
 
 Linux only. On macOS nothing works differently: the script changes only its version number, and the

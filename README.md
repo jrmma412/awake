@@ -173,8 +173,11 @@ awake agent off        # remove it
 
 Closing a MacBook's lid uses a separate sleep path that no keep-awake tool can block,
 including `awake`, `awake agent` and `caffeinate`. The Mac only stays awake with the
-lid closed if macOS's own clamshell mode applies (on power with an external display,
-dummy plug, or virtual display it counts) or if sleep is disabled with `pmset`.
+lid closed if macOS's own clamshell mode applies (on power with a real external display
+or an HDMI dummy plug) or if sleep is disabled with `pmset`. A software virtual display
+(`awake display`) is **not confirmed** to count: on an M1 Pro it did not change
+`AppleClamshellCausesSleep`. If `awake clamshell` still says the lid will sleep the Mac,
+use `pmset disablesleep 1`.
 
 ```
 awake clamshell        # will closing the lid sleep this Mac? and what to do about it
@@ -227,7 +230,9 @@ awake all            # keep awake + mouse jiggle + agent mode ("awake all on" wo
 awake all 2h         # the same; the timer covers keep-awake and jiggle
 awake all random      # everything, with random jiggle in one command (also `all on random`,
                      # `all random 2h`, `all simple`; works even if it's already on)
-awake all off        # stop all three
+awake all off        # stop all three (the virtual display, if you have it, is left alone)
+awake all off --display   # ...and also remove the virtual display
+awake all --display       # ...or turn everything on, including the virtual display
 ```
 
 - Agent mode has no timer: it stays on (also after restarts) until `awake all off` or
