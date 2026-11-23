@@ -194,18 +194,21 @@ unlock() { [[ -n $HAVE_LOCK ]] && rmdir "$D/lock" 2>/dev/null; HAVE_LOCK=; }
 # To come back after a restart, 'awake on' also adds a login entry (XDG autostart, which COSMIC, GNOME,
 # KDE and most desktops run when you log in). It runs 'awake _resume', which turns keep-awake back on
 # unless its timer is over by then. 'awake off' removes it.
+ENTRY_OFF='Hidden=true|X-GNOME-Autostart-enabled=false'   # how startup-apps settings turn an entry off
 save_boot() {  # save_boot END: fails if the login entry can't be written
-  local bin=$SELF
-  [[ $bin =~ ^[A-Za-z0-9_./-]+$ ]] || return 1   # it goes into the entry's Exec line
+  local bin=$SELF off
+  [[ $bin =~ ^[A-Za-z0-9_./-]+$ && -x $bin ]] || return 1   # it goes into the entry's Exec line, and must run
+  off=$(grep -sxE "$ENTRY_OFF" "$ON_AUTOSTART")   # turned off in your startup apps: it stays off
   mkdir -p "${ON_AUTOSTART%/*}" 2>/dev/null &&
     printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=awake' \
       "Comment=Turns awake's keep-awake back on after a restart ('awake off' removes this)" \
-      "Exec=$bin _resume" 'Terminal=false' > "$ON_AUTOSTART.tmp" 2>/dev/null &&
+      "TryExec=$bin" "Exec=$bin _resume" 'Terminal=false' ${off:+"$off"} > "$ON_AUTOSTART.tmp" 2>/dev/null &&
     mv -f "$ON_AUTOSTART.tmp" "$ON_AUTOSTART" && echo "$1" > "$ONBOOT"
 }
 clear_boot() { rm -f "$ONBOOT" "$ON_AUTOSTART" "$ON_AUTOSTART.tmp"; }
 boot_pending() {   # will keep-awake come back at the next login?
   [[ -f $ONBOOT && -f $ON_AUTOSTART ]] || return 1
+  grep -qsxE "$ENTRY_OFF" "$ON_AUTOSTART" && return 1
   local e; e=$(<"$ONBOOT")
   [[ $e =~ ^[0-9]+$ ]] && (( e == 0 || e > $(now) ))
 }
@@ -226,12 +229,13 @@ turn_on() {
     rm -f "$UNTIL"; unlock
     echo "awake: could not turn on: $(helper_error)"; return 1
   fi
-  local again=", also after restarts"
-  save_boot "$end" || { again=""; clear_boot; }
+  local again="" saved=1
+  save_boot "$end" || { saved=0; clear_boot; }
+  boot_pending && again=", also after restarts"
   unlock
   [[ $(cat "$HELD" 2>/dev/null) == *screen:* ]] ||
     echo "awake: note: this desktop did not accept a keep-screen-on request, so only system sleep is blocked; the screen may still turn off and lock"
-  [[ -n $again ]] || boot_note
+  (( saved )) || boot_note
   if [[ -n $secs ]]; then echo "awake: ON for $(human "$secs") (screen kept on, no auto-lock or sleep${again})"
   else echo "awake: ON until you run 'awake off' (screen kept on, no auto-lock or sleep${again})"; fi
 }
@@ -240,14 +244,15 @@ turn_on() {
 # desktop starts login entries it can't end it early, and it waits up to a minute for the desktop's
 # screen-saver service, which may start after the login entries.
 resume() {
-  boot_pending || { clear_boot; return 0; }   # timer over (or no saved state): tidy up
-  need_py >/dev/null || return 1
   lock || return 1
+  if ! boot_pending; then clear_boot; unlock; return 0; fi   # timer over, 'awake off', or no saved state
   if running; then unlock; return 0; fi
+  need_py >/dev/null || { unlock; return 1; }
   local end; end=$(<"$ONBOOT")
   rm -f "$PIDF" "$UNTIL" "$HELD" "$ERRF"
   (( end > 0 )) && echo "$end" > "$UNTIL"
-  echo $$ > "$PIDF"   # 'awake off' and 'awake status' see it while it waits for the desktop
+  echo $$ > "$PIDF"   # 'awake off' and 'awake status' see it while it waits; if 'awake off' or
+                      # 'awake on' changes this file meanwhile, the helper leaves it to them
   unlock
   exec python3 -I -c "$(helper_py)" hold display "$PIDF" "$UNTIL" "$end" "$ERRF" "$HELD" 60 2>"$D/helper.log"
 }
@@ -909,8 +914,8 @@ def hold(kind, pidf, untilf, end, errf, heldf, wait=0):
     except GLib.Error:
         sess = None
     if sess and wait:   # at login: give the desktop's screen-saver service time to start
-        deadline = time.time() + wait
-        while time.time() < deadline:
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
             try:
                 if any(sess.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
                                       'NameHasOwner', GLib.Variant('(s)', (n,)), GLib.VariantType('(b)'),
@@ -920,6 +925,7 @@ def hold(kind, pidf, untilf, end, errf, heldf, wait=0):
             except GLib.Error:
                 break
             time.sleep(1)
+    if wait and not mine(pidf): sys.exit(0)   # 'awake off' or another 'awake on' meanwhile: theirs to decide
     if sess:
         if display:   # COSMIC, KDE, Xfce and others: no screen off, lock or idle suspend while held
             try:
@@ -945,6 +951,7 @@ def hold(kind, pidf, untilf, end, errf, heldf, wait=0):
     except GLib.Error: pass
     if not held:
         fail(errf, 'neither the desktop nor systemd accepted a keep-awake request')
+    if wait and not mine(pidf): sys.exit(0)
     put(heldf, ' '.join(held))
     put(pidf, str(os.getpid()))
     loop = GLib.MainLoop()

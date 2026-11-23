@@ -241,10 +241,14 @@ exec "@BIN@/awake-hold" "$@"
 FAKE_HOLD = r"""#!/bin/sh
 # Stands in for awake's helper, under the same process name: kind pidf untilf end errf heldf [wait]
 if [ -n "$FAKE_HOLD_FAILS" ]; then echo "nothing accepted a keep-awake request" > "$5"; exit 1; fi
+trap 'kill $! 2>/dev/null; [ "$(cat "$2" 2>/dev/null)" = $$ ] && rm -f "$2" "$3" "$6"; exit 0' TERM INT
+if [ -n "$7" ] && [ -n "$FAKE_HOLD_WAIT" ]; then   # at login, the desktop isn't up yet
+  sleep "$FAKE_HOLD_WAIT" &
+  wait
+fi
 echo "screen:freedesktop sleep:logind" > "$6"
 echo $$ > "$2"
 sleep 300 &
-trap 'kill $! 2>/dev/null; [ "$(cat "$2" 2>/dev/null)" = $$ ] && rm -f "$2" "$3" "$6"; exit 0' TERM INT
 wait
 """
 
@@ -376,12 +380,71 @@ def test_linux_toggle_and_all_off_remove_the_login_entry(tmp_path, fake_helper):
 
 
 @linux_only
-def test_linux_on_from_an_odd_path_still_turns_on(tmp_path, fake_helper):
+def test_linux_off_while_logging_in_keeps_it_off(tmp_path, fake_helper):
+    # At login the helper waits for the desktop; status shows it on meanwhile, and 'awake off' then
+    # stops it for good.
     env, log = fake_helper
-    odd = tmp_path / "my bin" / "awake"   # a space can't go into the login entry's Exec line safely
-    odd.parent.mkdir()
+    entry = tmp_path / ".config" / "autostart" / "awake-on.desktop"
+    run([LINUX, "on"], tmp_path, env=env)
+    restart(tmp_path)
+    login = log_in(tmp_path, dict(env, FAKE_HOLD_WAIT="3"))
+    try:
+        assert wait_for(lambda: status(tmp_path, env).startswith("ON"), 2)   # before the helper writes anything
+        assert not (tmp_path / ".awake" / "held").exists()
+        r = run([LINUX, "off"], tmp_path, env=env)
+        assert r.stdout.startswith("awake: OFF") and login.wait(5) is not None
+    finally:
+        if login.poll() is None:
+            login.kill()
+    time.sleep(0.5)
+    assert status(tmp_path, env) == "OFF\n" and not entry.exists()
+    assert not (tmp_path / ".awake" / "pid").exists()
+
+
+@linux_only
+def test_linux_off_just_before_the_login_entry_runs_keeps_it_off(tmp_path, fake_helper):
+    # The login entry starts while another awake command holds the lock, and that command is
+    # 'awake off': once the entry gets the lock it must see that and stay off.
+    env, log = fake_helper
+    entry, boot = tmp_path / ".config" / "autostart" / "awake-on.desktop", tmp_path / ".awake" / "on.boot"
+    run([LINUX, "on"], tmp_path, env=env)
+    restart(tmp_path)
+    lock = tmp_path / ".awake" / "lock"
+    lock.mkdir()
+    login = log_in(tmp_path, env)
+    try:
+        time.sleep(0.5)
+        boot.unlink()   # what 'awake off' does while it holds the lock
+        entry.unlink()
+        lock.rmdir()
+        assert login.wait(10) == 0
+    finally:
+        if login.poll() is None:
+            login.kill()
+    assert status(tmp_path, env) == "OFF\n" and len(holds(log)) == 1
+
+
+@linux_only
+def test_linux_entry_turned_off_in_startup_apps_stays_off(tmp_path, fake_helper):
+    env, log = fake_helper
+    entry = tmp_path / ".config" / "autostart" / "awake-on.desktop"
+    run([LINUX, "on"], tmp_path, env=env)
+    entry.write_text(entry.read_text() + "Hidden=true\n")   # what startup-apps settings write
+    assert status(tmp_path, env) == "ON (screen kept on, no auto-lock or sleep)\n"
+    run([LINUX, "on"], tmp_path, env=env)   # awake on again doesn't turn it back on
+    assert "Hidden=true\n" in entry.read_text() and "after restarts" not in status(tmp_path, env)
+
+
+@linux_only
+@pytest.mark.parametrize("how", ["space in the path", "not executable"])
+def test_linux_on_from_an_odd_path_still_turns_on(tmp_path, fake_helper, how):
+    env, log = fake_helper
+    odd = tmp_path / ("my bin" if how == "space in the path" else "bin") / "awake"
+    odd.parent.mkdir()   # a space can't go into the entry's Exec line safely; a plain file can't run
     shutil.copy(LINUX, odd)
-    r = run([odd, "on"], tmp_path, env=env)
+    if how == "not executable":
+        odd.chmod(0o644)
+    r = run((["bash"] if how == "not executable" else []) + [odd, "on"], tmp_path, env=env)
     assert r.returncode == 0 and "won't come back after a restart" in r.stdout, r.stdout
     assert r.stdout.endswith("(screen kept on, no auto-lock or sleep)\n")
     assert not (tmp_path / ".config" / "autostart" / "awake-on.desktop").exists()
@@ -395,6 +458,73 @@ def test_linux_on_that_fails_adds_no_login_entry(tmp_path, fake_helper):
     r = run([LINUX, "on"], tmp_path, env=dict(env, FAKE_HOLD_FAILS="1"))
     assert r.returncode == 1 and "could not turn on" in r.stdout, r.stdout
     assert not (tmp_path / ".config" / "autostart" / "awake-on.desktop").exists()
+
+
+STANDIN_SCREENSAVER = r"""
+import sys, time
+from gi.repository import Gio, GLib
+time.sleep(float(sys.argv[1]))   # the desktop's screen-saver service starts late
+node = Gio.DBusNodeInfo.new_for_xml(
+    "<node><interface name='org.freedesktop.ScreenSaver'><method name='Inhibit'>"
+    "<arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='u' direction='out'/>"
+    "</method></interface></node>")
+def bus(conn, name):
+    conn.register_object('/org/freedesktop/ScreenSaver', node.interfaces[0],
+                         lambda c, s, p, i, m, a, inv: inv.return_value(GLib.Variant('(u)', (7,))), None, None)
+Gio.bus_own_name(Gio.BusType.SESSION, 'org.freedesktop.ScreenSaver', 0, bus, None, None)
+GLib.MainLoop().run()
+"""
+HELPER_DRIVER = r"""
+import json, os, subprocess, sys, time
+helper, standin, d, delay, drop = sys.argv[1:]
+P = lambda n: os.path.join(d, n)
+s = subprocess.Popen([sys.executable, standin, delay])
+env = dict(os.environ, DBUS_SYSTEM_BUS_ADDRESS='unix:path=' + P('no-system-bus'))   # never the real logind
+t0 = time.monotonic()
+h = subprocess.Popen([sys.executable, '-I', helper, 'hold', 'display', P('pid'), P('until'), '0', P('err'),
+                      P('held'), '10'], env=env)
+open(P('pid'), 'w').write(str(h.pid))   # as 'awake _resume' does before it becomes the helper
+if drop:
+    time.sleep(float(drop)); os.remove(P('pid'))   # 'awake off' while it waits
+while time.monotonic() - t0 < 15 and h.poll() is None and not os.path.exists(P('held')):
+    time.sleep(0.05)
+out = {'after': round(time.monotonic() - t0, 1), 'held': open(P('held')).read() if os.path.exists(P('held')) else None}
+time.sleep(0.3)
+out.update(running=h.poll() is None, pid=open(P('pid')).read() if os.path.exists(P('pid')) else None, mine=str(h.pid))
+h.terminate(); h.wait(5)
+out['pid_after_stop'] = os.path.exists(P('pid'))
+s.terminate(); s.wait(5)
+print(json.dumps(out))
+"""
+
+
+def system_python_with_gi():
+    py = "/usr/bin/python3"
+    ok = os.path.exists(py) and shutil.which("dbus-run-session") and \
+        subprocess.run([py, "-c", "import gi"], capture_output=True).returncode == 0
+    return py if ok else None
+
+
+@linux_only
+@pytest.mark.skipif(not system_python_with_gi(), reason="needs /usr/bin/python3 with PyGObject and dbus-run-session")
+@pytest.mark.parametrize("drop", ["", "0.5"])
+def test_linux_helper_waits_for_the_desktop_at_login(tmp_path, drop):
+    # The real helper, on a private D-Bus session where the screen-saver service appears after 1.5s.
+    import json
+    text = LINUX.read_text()
+    start = text.index("cat <<'PY'\n") + len("cat <<'PY'\n")
+    (tmp_path / "helper.py").write_text(text[start:text.index("\nPY\n", start) + 1])
+    (tmp_path / "standin.py").write_text(STANDIN_SCREENSAVER)
+    (tmp_path / "driver.py").write_text(HELPER_DRIVER)
+    r = subprocess.run(["dbus-run-session", "--", system_python_with_gi(), str(tmp_path / "driver.py"),
+                        str(tmp_path / "helper.py"), str(tmp_path / "standin.py"), str(tmp_path), "1.5", drop],
+                       capture_output=True, text=True, timeout=60)
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    if not drop:   # it waited, went on soon after the service came, and holds the screen
+        assert out["held"] == "screen:freedesktop" and 1.4 <= out["after"] <= 3.5, out
+        assert out["running"] and out["pid"] == out["mine"] and not out["pid_after_stop"], out
+    else:          # 'awake off' took its pid file meanwhile: it gives up and writes nothing back
+        assert out["held"] is None and not out["running"] and out["pid"] is None, out
 
 
 # ---- macOS ----

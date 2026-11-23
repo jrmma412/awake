@@ -288,7 +288,9 @@ All the commands above work the same (`awake 2h`, `awake until 5pm`, `awake jigg
   `awake until 5pm` add a login entry, `~/.config/autostart/awake-on.desktop`, which COSMIC,
   GNOME, KDE and most desktops run when you log in. It turns keep-awake back on, unless its timer
   ran out in the meantime. `awake off` removes it, and `awake status` says
-  "also after restarts" while it's there. Jiggle doesn't come back; agent mode always did.
+  "also after restarts" while it's there. If you turn the entry off in your desktop's startup-apps
+  settings, awake leaves it off. Desktops that don't run login entries (some tiling window
+  managers) won't bring it back. Jiggle doesn't come back; agent mode always did.
 - **Jiggle** moves the pointer with a virtual mouse (`/dev/uinput`), the only way to do it on
   Wayland, and only when the desktop reports you idle (Wayland idle notifications, or GNOME's
   idle monitor). You need permission to use `/dev/uinput`: Steam's controller support already
