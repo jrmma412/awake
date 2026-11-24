@@ -960,13 +960,14 @@ case "$1" in
     echo '    mode 1920 1080 60000'
     echo '  }'
     echo '}'
-    echo "output \"Virtual-1\" enabled=#$en {"
+    echo "output \"Virtual-1\" enabled=#$([ "$en" = false ] && echo false || echo true) {"
     echo '  position 2560 0'
+    [ "$en" = mirror ] && echo '  mirroring "DP-3"'
     echo '  modes {'
     cur=""
     for m in "4096 2160 60000" "2560 1600 59987" "2560 1600 59972" "1920 1080 60000" "1280 720 60000" "1024 768 60004"; do
       set -- $m; extra=""
-      if [ "$en" = true ] && [ -z "$cur" ] && [ "$1" = "$w" ] && [ "$2" = "$h" ]; then extra=" current=#true"; cur=1; fi
+      if [ "$en" != false ] && [ "$en" != mirror ] && [ -z "$cur" ] && [ "$1" = "$w" ] && [ "$2" = "$h" ]; then extra=" current=#true"; cur=1; fi
       [ "$1" = 1024 ] && extra="$extra preferred=#true"
       echo "    mode $1 $2 $3$extra"
     done
@@ -1150,6 +1151,18 @@ def test_linux_display_size_for_a_display_turned_off_is_left_to_you(tmp_path):
     r = run([LINUX, "display", "2560x1600"], tmp_path, env=env)   # setting a mode would also turn it on
     assert r.returncode == 1 and "turned off in COSMIC's display settings" in r.stdout, r.stdout
     assert state.read_text().split() == ["false", "1920", "1080"]
+    assert not any(" mode " in ln for ln in randr_calls(calls))
+
+
+@linux_only
+def test_linux_display_mirroring_says_so_and_sets_no_size(tmp_path):
+    env, calls, state, _ = fake_vkms(tmp_path, boot=True, mode=(1024, 768))
+    state.write_text("mirror 1024 768\n")   # COSMIC lists no current mode for a mirror
+    for args in (["display"], ["display", "2560x1600"], ["display", "status"], ["status"]):
+        r = run([LINUX] + args, tmp_path, env=env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "display: ON (virtual display Virtual-1, mirroring DP-3, also after restarts)" in r.stdout, r.stdout
+        assert "0x0" not in r.stdout
     assert not any(" mode " in ln for ln in randr_calls(calls))
 
 
