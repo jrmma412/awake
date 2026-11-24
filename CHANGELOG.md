@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.15.2 (2026-11-24)
+
+macOS fixes. On Linux nothing works differently: `linux/awake` changes only its version number.
+Successful commands behave as before; the changes are in error paths, exit codes and a few edge cases.
+
+### Fixed
+- macOS `awake all until 5pm --display` (and any flag after `until <time>`) failed with "bad time": the time now
+  stops at the first flag. `all --display until 5pm` already worked.
+- macOS `awake on` and `awake jiggle` no longer say ON when the helper process died at once: they put the
+  screen saver setting back, say so, and exit 1 (so `awake all` counts it as a failure too).
+- macOS `awake agent on` checks that the agent really has a running process (via launchd) before saying ON,
+  and exits 1 if not. `agent status` no longer matches any process that has "caffeinate -ims" in its command line.
+- macOS `awake display off` checks that vdisplay stopped and the login item is gone, and exits 1 if not;
+  `awake all off --display` reports that instead of "everything is off, including the virtual display".
+- macOS `awake all <time>` says when the timer was not applied because keep-awake or jiggle was already on.
+- macOS `awake jiggle off` / `toggle` exit 1 when another awake command holds the lock.
+- macOS: a late restore from an old timer no longer overwrites the saved screen saver setting of a newer `awake on`.
+- macOS `awake clamshell`: a "won't sleep" reading on battery is marked as only macOS's prediction.
+
+### Tests
+- New macOS tests for each fix above (fake `defaults`, `caffeinate`, `vdisplay`, `ioreg`, `pmset`; none touch real settings).
+- Not covered: `awake all <time>` with a part already on, and the live `agent on` against launchd.
+
 ## 1.15.1 (2026-11-23)
 
 Linux only. On macOS nothing works differently: the script changes only its version number.
