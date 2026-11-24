@@ -647,6 +647,86 @@ def test_mac_all_off_ok_exits_zero(tmp_path):
 
 
 @mac_only
+def test_mac_until_time_stops_at_a_flag(tmp_path):
+    """`until 5pm --display` must not read '--display' as part of the time."""
+    env, _ = fake_vdisplay(tmp_path, 0)
+    r = run([MAC, "display", "status", "until", "5pm", "--display"], tmp_path, env=env)
+    assert "bad time" not in r.stdout and "awake: until" in r.stdout, r.stdout + r.stderr
+    r = run([MAC, "display", "status", "until", "5", "pm"], tmp_path, env=env)   # "5 pm" still joins
+    assert "bad time" not in r.stdout and "awake: until" in r.stdout, r.stdout + r.stderr
+
+
+@mac_only
+def test_mac_on_reports_failed_start(tmp_path):
+    """If caffeinate dies at once, `awake on` must not say ON; it restores the setting and exits 1."""
+    env, log = fake_system(tmp_path, "exit 1")
+    r = run([MAC, "on"], tmp_path, env=env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "could not start caffeinate" in r.stdout and "awake: ON" not in r.stdout
+    writes = [l for l in log.read_text().splitlines() if " write " in l]
+    assert writes[0].endswith("-int 0") and writes[-1].endswith("-int 1200"), writes
+    assert not (tmp_path / ".awake" / "pid").exists()
+
+
+@mac_only
+def test_mac_display_off_reports_failure(tmp_path):
+    """`display off` / `all off --display` say so, and exit 1, if the display is still running."""
+    env, calls = fake_vdisplay(tmp_path, 0, stop_works=False)
+    r = run([MAC, "display", "off"], tmp_path, env=env)
+    assert r.returncode == 1 and "could not fully remove" in r.stdout and "display OFF" not in r.stdout
+    r = run([MAC, "all", "off", "--display"], tmp_path, env=env)
+    assert r.returncode == 1 and "not everything could be turned off" in r.stdout
+    assert "including the virtual display" not in r.stdout
+
+
+@mac_only
+def test_mac_jiggle_off_busy_exits_1(tmp_path):
+    """`awake jiggle off` must not report success when another awake command holds the lock."""
+    (tmp_path / ".awake" / "lock").mkdir(parents=True)
+    r = run([MAC, "jiggle", "off"], tmp_path)
+    assert r.returncode == 1 and "busy" in r.stdout
+
+
+@mac_only
+def test_mac_restore_skips_when_newer_on_is_running(tmp_path):
+    """A late `_restore` from an old timer must not undo a newer `awake on`'s saved setting."""
+    env, log = fake_system(tmp_path)
+    cc = shutil.which("cc")
+    if not cc:
+        pytest.skip("needs a C compiler to make a process named caffeinate")
+    src = tmp_path / "c.c"
+    src.write_text("#include <unistd.h>\nint main(void){sleep(30);return 0;}\n")
+    exe = tmp_path / "fakebin" / "caffeinate"
+    subprocess.run([cc, str(src), "-o", str(exe)], check=True)   # a real process whose name is caffeinate
+    proc = subprocess.Popen([str(exe)])
+    time.sleep(0.3)
+    try:
+        d = tmp_path / ".awake"
+        d.mkdir(parents=True)
+        (d / "pid").write_text(str(proc.pid))
+        (d / "idleTime").write_text("1200")
+        r = run([MAC, "_restore"], tmp_path, env=env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not log.exists() or " write " not in log.read_text()
+        assert (d / "idleTime").exists()   # still waiting for the newer run's own `awake off`
+    finally:
+        proc.kill()
+
+
+@mac_only
+def test_mac_clamshell_battery_note(tmp_path):
+    """On battery, a 'won't sleep' reading is flagged as only a prediction."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "ioreg").write_text('#!/bin/sh\necho \'"AppleClamshellState" = No\'\necho \'"AppleClamshellCausesSleep" = No\'\n')
+    (fake / "pmset").write_text("#!/bin/sh\n[ \"$1\" = -g ] && [ \"$2\" = batt ] && echo \"Now drawing from 'Battery Power'\"\nexit 0\n")
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    r = run([MAC, "clamshell"], tmp_path, env={"PATH": f"{fake}:{os.environ['PATH']}"})
+    assert "only macOS's prediction" in r.stdout
+
+
+@mac_only
 def test_mac_clamshell_bad_argument(tmp_path):
     r = run([MAC, "clamshell", "on"], tmp_path)
     assert r.returncode == 1 and "usage: awake clamshell" in r.stdout
@@ -864,15 +944,18 @@ def test_linux_bad_jiggle_arguments_print_usage(tmp_path, args):
     assert not (tmp_path / ".awake" / "jiggle.pid").exists()
 
 
-def fake_vdisplay(tmp_path, status_rc=0):
-    """A stand-in vdisplay on PATH: logs its calls, and `status` answers with status_rc."""
+def fake_vdisplay(tmp_path, status_rc=0, stop_works=True):
+    """A stand-in vdisplay on PATH: logs its calls, and `status` answers with status_rc.
+    After `stop`, status says "not running" (rc 1) when stop_works, else it keeps answering status_rc."""
     fake = tmp_path / "fakebin"
     fake.mkdir(exist_ok=True)
     calls = tmp_path / "vd-calls.log"
+    stopped = tmp_path / "vd-stopped"
     (fake / "vdisplay").write_text(f"""#!/bin/sh
 echo "vdisplay $*" >> "{calls}"
+[ "$1" = stop ] && {"touch" if stop_works else "true"} "{stopped}"
 if [ "$1" = status ]; then
-  [ {status_rc} -eq 1 ] && {{ echo "vdisplay: not running"; exit 1; }}
+  if [ -e "{stopped}" ] || [ {status_rc} -eq 1 ]; then echo "vdisplay: not running"; exit 1; fi
   echo "vdisplay: running (pid 4242)"
   echo '  display id 17, 1920x1080 @ 60Hz, name "vdisplay"'
   exit {status_rc}
@@ -881,6 +964,23 @@ exit 0
 """)
     (fake / "vdisplay").chmod(0o755)
     return {"PATH": f"{fake}:{os.environ['PATH']}"}, calls
+
+
+def fake_system(tmp_path, caffeinate_body="exit 0"):
+    """Fake defaults/killall/caffeinate on PATH so `awake on` never touches the real settings."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir(exist_ok=True)
+    log = tmp_path / "defaults.log"
+    (fake / "defaults").write_text(f"""#!/bin/sh
+echo "defaults $*" >> "{log}"
+case "$*" in *read*) echo 1200;; esac
+exit 0
+""")
+    (fake / "killall").write_text("#!/bin/sh\nexit 0\n")
+    (fake / "caffeinate").write_text(f"#!/bin/sh\n{caffeinate_body}\n")
+    for f in fake.iterdir():
+        f.chmod(0o755)
+    return {"PATH": f"{fake}:{os.environ['PATH']}"}, log
 
 
 @mac_only

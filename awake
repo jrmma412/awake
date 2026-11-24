@@ -215,6 +215,10 @@ turn_on() {
   # Wait (up to ~2s) for the background process to record its pid, so an immediate
   # `awake status` or `awake off` sees it.
   local i; for i in {1..20}; do [[ -s $PIDF ]] && break; sleep 0.1; done
+  if ! running; then   # caffeinate died at once: don't say ON, put the screen saver setting back
+    rm -f "$PIDF" "$UNTIL"; restore; unlock
+    echo "awake: could not start caffeinate, so nothing is kept awake (screen saver setting put back)"; return 1
+  fi
   unlock
   if [[ -n $secs ]]; then echo "awake: ON for $(human $secs) (screen saver off, display/system kept awake)"
   else echo "awake: ON until you run 'awake off' (screen saver off, display/system kept awake)"; fi
@@ -461,8 +465,8 @@ jiggle() {
   local arg=${1:-on} secs=""
   case $arg in
     status) jiggle_status; return 0;;
-    off|stop) jiggle_off; return 0;;
-    toggle) if jiggle_running; then jiggle_off; return 0; fi;;
+    off|stop) jiggle_off; return $?;;
+    toggle) if jiggle_running; then jiggle_off; return $?; fi;;
     on) [[ -z $2 ]] || secs=$(parse_dur "$2") || { echo "awake: bad time '$2' (try 30m, 2h, 1h30m)"; return 1; };;
     *) secs=$(parse_dur "$arg") || { echo "usage: awake jiggle [simple|random] [time|on|off|toggle|status]"; return 1; };;
   esac
@@ -491,6 +495,10 @@ jiggle() {
     if [[ -f $pidf && $(<"$pidf") == $p ]]; then rm -f "$pidf" "$untilf" "${pidf%.pid}.mode"; fi
   ' _ "$JPID" "$JUNTIL" "$(jiggle_script)" "$JIGGLE_EVERY" "$end" "$mode" >/dev/null 2>&1 &
   local i; for i in {1..20}; do [[ -s $JPID ]] && break; sleep 0.1; done
+  if ! jiggle_running; then
+    rm -f "$JPID" "$JUNTIL" "$JMODE"; unlock
+    echo "awake: jiggle did not start (the helper exited at once); nothing was changed"; return 1
+  fi
   unlock
   local how="mouse nudged after ${JIGGLE_EVERY}s idle"
   [[ $mode == random ]] && how="random: mouse glides to a nearby spot after 20-75s idle"
@@ -518,9 +526,11 @@ ensure_menubar() {
 AGENT_LABEL=com.jrmma412.awake.agent
 AGENT_PLIST=$HOME/Library/LaunchAgents/$AGENT_LABEL.plist
 agent_loaded() { launchctl print "gui/$UID/$AGENT_LABEL" >/dev/null 2>&1; }
+# Loaded in launchd AND has a live process (launchd reports "pid = N" only while it runs).
+agent_running() { launchctl print "gui/$UID/$AGENT_LABEL" 2>/dev/null | grep -Eq '^[[:space:]]*pid = [0-9]+'; }
 agent_status() {
   if [[ ! -f $AGENT_PLIST ]]; then echo "agent mode: not installed (add it with 'awake agent')"; return 0; fi
-  if agent_loaded && pgrep -qf "caffeinate -ims"; then
+  if agent_running; then
     echo "agent mode: ON (system kept awake 24/7 and after restarts; display sleeps and the screen locks normally)"
   else
     echo "agent mode: installed but not running; run 'awake agent' again to restart it"
@@ -563,7 +573,9 @@ PL
   chmod 644 "$AGENT_PLIST"
   launchctl bootout "gui/$UID/$AGENT_LABEL" 2>/dev/null
   if launchctl bootstrap "gui/$UID" "$AGENT_PLIST" 2>/dev/null || agent_loaded; then
-    sleep 0.5; agent_status
+    local i; for i in {1..20}; do agent_running && break; sleep 0.1; done
+    agent_status
+    agent_running || { echo "awake: agent mode was loaded but is not running; run 'awake agent status'"; return 1; }
     echo "  (on a MacBook, 'system awake' applies while plugged in; the screen still locks per your settings)"
   else
     echo "awake: could not start agent mode (launchctl refused). The file is at $AGENT_PLIST"; return 1
@@ -638,8 +650,12 @@ display() {
       [[ $VD_RC == 0 ]];;
     off|stop)
       b=$(vd_bin) || { echo "awake: display add-on is not installed"; return 0; }
-      vd_login && [[ -n $brew ]] && "$brew" services stop "$VD_FORMULA" >/dev/null 2>&1
+      local drc=0
+      if vd_login && [[ -n $brew ]]; then "$brew" services stop "$VD_FORMULA" >/dev/null 2>&1 || drc=1; fi
       "$b" stop >/dev/null 2>&1
+      "$b" status >/dev/null 2>&1 && drc=1    # still running after the stops
+      vd_login && drc=1                       # login item still there
+      if (( drc )); then echo "awake: could not fully remove the virtual display (see 'awake display status' and 'vdisplay status')"; return 1; fi
       echo "awake: display OFF (virtual display removed, won't start at login). vdisplay itself stays installed"
       return 0;;
     *) echo "usage: awake display [on|off|status]"; return 1;;
@@ -688,6 +704,7 @@ clamshell() {
     echo "macOS doesn't report a lid here (desktop Mac or virtual machine), so there's nothing to change."
   elif [[ $causes == no ]]; then
     echo "Closing the lid won't sleep this Mac right now: macOS counts an attached display for clamshell mode."
+    [[ -z $src || $src == "AC Power" ]] || echo "(On battery this is only macOS's prediction. With just a virtual display attached, the Mac still slept on lid close.)"
     echo "If you unplug that display, check again. To stay awake with the lid closed regardless (asks for your password):"
     echo "  sudo pmset -a disablesleep 1      (undo: sudo pmset -a disablesleep 0)"
   else
@@ -727,13 +744,14 @@ all() {
     return $rc
   fi
   if [[ -n $arg ]]; then secs=$(parse_dur "$arg") || { echo "usage: awake all [simple|random] [time|off] [--display]"; return 1; }; fi
-  local rc=0 jg=" + jiggle"
+  local rc=0 jg=" + jiggle" tnote=""
+  [[ -n $secs ]] && { running || jiggle_running; } && tnote=" (not applied to a part that was already on; run 'awake all off' first to restart it)"
   turn_on "$secs" || rc=1
   jiggle ${jmode:+"$jmode"} ${arg:+"$arg"} || { rc=1; jg=" (jiggle did not start)"; }
   agent on || rc=1
   if (( with_display )); then display on || { rc=1; echo "awake all: the virtual display did not start"; }; fi
   echo
-  echo "awake all: on${jg}${jmode:+ ($jmode)}${secs:+, timer $(human $secs)}; agent mode stays on until 'awake all off' or 'awake agent off'"
+  echo "awake all: on${jg}${jmode:+ ($jmode)}${secs:+, timer $(human $secs)}${tnote}; agent mode stays on until 'awake all off' or 'awake agent off'"
   return $rc
 }
 
@@ -821,9 +839,11 @@ uninstall() {
 # "until 5pm" anywhere in the arguments becomes a duration in seconds, so every command below just works.
 if (( ${argv[(I)until]} )); then
   _i=${argv[(I)until]}
-  _t=${(j::)argv[$((_i+1)),-1]}
+  _j=$((_i+1))
+  while (( _j <= $# )) && [[ ${argv[_j]} != -* ]]; do (( _j++ )); done   # the time stops at the first flag (--display)
+  _t=${(j::)argv[$((_i+1)),$((_j-1))]}
   [[ -n $_t ]] && parse_until "$_t" || { echo "awake: bad time '$_t' after 'until' (try 5pm, 5:30pm, 17:30)"; exit 1; }
-  set -- "${(@)argv[1,$((_i-1))]}" "$REPLY"
+  set -- "${(@)argv[1,$((_i-1))]}" "$REPLY" "${(@)argv[$_j,-1]}"
   echo "awake: until $(date -r $(( EPOCHSECONDS + REPLY )) '+%-I:%M %p')${UNTIL_TOMORROW:+ tomorrow}"
 fi
 
@@ -851,7 +871,7 @@ case $1 in
   display)    display "${2:-on}";;
   all)        shift; all "$@";;
   uninstall)  shift; uninstall "$@";;
-  _restore)   lock && { restore; unlock; };;
+  _restore)   lock && { running || restore; unlock; };;   # a newer 'awake on' has its own saved setting
   _menu)      menu;;   # internal: called by the background process when caffeinate exits
   help|-h|--help) usage;;
   -v|--version|version) echo "awake $VERSION";;
