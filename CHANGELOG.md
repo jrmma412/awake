@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Linux `awake status` / `awake display` on a virtual display that mirrors another screen (COSMIC lists
+  no size for a mirror) printed "0x0 @ 0 Hz". It now says "mirroring DP-3". `awake display` leaves a
+  mirror's size alone, since it has none of its own. Seen on Pop!_OS 24.04 after setting Virtual-1 to mirror DP-3.
+
 ## 1.15.0 (2026-11-23)
 
 macOS changes. On Linux nothing works differently: `linux/awake` changes only its version number, and

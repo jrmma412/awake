@@ -655,7 +655,7 @@ wl_env() {
   return 1
 }
 # What COSMIC reports for display $1. Sets VD_EN (enabled/disabled), VD_W VD_H VD_R (current size and
-# refresh in mHz) and VD_PW VD_PH (the driver's preferred size). On failure VD_WHY says why: other (not
+# refresh in mHz; 0 when it mirrors another display), VD_MIR (the display it mirrors, if any) and VD_PW VD_PH (the driver's preferred size). On failure VD_WHY says why: other (not
 # COSMIC, or no desktop to talk to), noanswer (COSMIC didn't answer) or missing (COSMIC doesn't list it).
 vd_read() {
   VD_KDL="" VD_WHY=other
@@ -666,11 +666,13 @@ vd_read() {
   local line
   line=$(awk -v n="\"$1\"" '
     $1 == "output" { cur = ($2 == n); if (cur) { found = 1; en = ($3 ~ /#true/) ? "enabled" : "disabled" } next }
+    cur && $1 == "mirroring" { mir = $2; gsub(/"/, "", mir) }
     cur && $1 == "mode" {
       if ($0 ~ /current=#true/) { w = $2; h = $3; r = $4 }
       if ($0 ~ /preferred=#true/) { pw = $2; ph = $3 } }
-    END { if (!found) exit 1; print en, w + 0, h + 0, r + 0, pw + 0, ph + 0 }' <<<"$VD_KDL") || return 1
-  read -r VD_EN VD_W VD_H VD_R VD_PW VD_PH <<<"$line"
+    END { if (!found) exit 1; print en, w + 0, h + 0, r + 0, pw + 0, ph + 0, mir ? mir : "-" }' <<<"$VD_KDL") || return 1
+  read -r VD_EN VD_W VD_H VD_R VD_PW VD_PH VD_MIR <<<"$line"
+  [[ $VD_MIR != - ]] || VD_MIR=""
 }
 vd_best() {   # vd_best NAME W H: the highest refresh (mHz) COSMIC offers for that size
   awk -v n="\"$1\"" -v w="$2" -v h="$3" '
@@ -701,7 +703,8 @@ display_line() {   # one line about the virtual display, for 'awake status' and 
   if ! dir=$(vd_connector); then echo "display: the vkms driver is loaded but shows no virtual display (see 'awake display')"; return 0; fi
   name=$(vd_name "$dir")
   if vd_read "$name"; then
-    if [[ $VD_EN == enabled ]]; then echo "display: ON (virtual display $name, ${VD_W}x${VD_H} @ $(hz "$VD_R") Hz${boot})"
+    if [[ $VD_EN == enabled && -n $VD_MIR ]]; then echo "display: ON (virtual display $name, mirroring $VD_MIR${boot})"
+    elif [[ $VD_EN == enabled ]]; then echo "display: ON (virtual display $name, ${VD_W}x${VD_H} @ $(hz "$VD_R") Hz${boot})"
     else echo "display: OFF (virtual display $name is turned off in COSMIC's display settings)"; fi
   elif [[ $(cat "$dir/enabled" 2>/dev/null) == enabled ]]; then echo "display: ON (virtual display $name${boot})"
   else echo "display: OFF (virtual display $name is connected but not in use; turn it on in your display settings)"; fi
@@ -746,6 +749,10 @@ display_on() {
     echo "awake: virtual display $name is turned off in COSMIC's display settings. Turn it on there (Settings > Displays)."
     echo "awake doesn't switch it on itself: turning it off and straight back on froze COSMIC in testing."
     return 1
+  fi
+  if [[ -n $VD_MIR ]]; then   # a mirror shows the other display's size; COSMIC has no size of its own for it
+    echo "awake: virtual display $name is mirroring $VD_MIR, so it has no size of its own to set."
+    display_line; return 0
   fi
   # A size you asked for, or 1920x1080 while it still has the driver's own default (1024x768).
   if [[ -n $size ]] || [[ $VD_W == "$VD_PW" && $VD_H == "$VD_PH" ]]; then
