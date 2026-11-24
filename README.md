@@ -201,9 +201,15 @@ battery the Mac will run until the battery is empty.
 
 For a Mac that runs headless or with the lid closed and has no monitor attached, so it
 can be reached by Screen Sharing, Moonlight/Sunshine or SSH. This replaces an HDMI dummy
-plug. It uses [vdisplay](https://github.com/jrmma412/homebrew-vdisplay), a separate free
+plug. It uses [vdisplay](https://github.com/jrmma412/homebrew-vdisplay), a separate
 tool. awake only installs it (after asking), starts it, and shows it. Nothing changes
-unless you run `awake display`.
+unless you run `awake display`. (The vdisplay repository is currently private, so installing
+it needs a GitHub sign-in with access: `gh auth login && gh auth setup-git`.)
+
+A virtual display is not confirmed to keep a MacBook awake with the lid closed: on an M1 Pro
+it slept on lid close with the virtual display as the only external display (on battery). A
+real monitor on power did keep it awake. See [`awake clamshell`](#lid-closed-awake-clamshell)
+and `docs/clamshell-research.md`.
 
 ```
 awake display          # install vdisplay if needed, add the virtual display now and at login
@@ -235,6 +241,7 @@ awake all off --display   # ...and also remove the virtual display
 awake all --display       # ...or turn everything on, including the virtual display
 ```
 
+- `--display` is macOS-only. The Linux `awake all` doesn't take it; use `awake display` there.
 - Agent mode has no timer: it stays on (also after restarts) until `awake all off` or
   `awake agent off`.
 - `awake all off` always runs all three stops. Agent mode is optional and not installed
