@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.15.1 (2026-11-23)
+
+Linux only. On macOS nothing works differently: the script changes only its version number.
 
 ### Fixed
 - Linux `awake status` / `awake display` on a virtual display that mirrors another screen (COSMIC lists
