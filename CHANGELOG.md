@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.15.2 (2026-11-24)
+
+macOS fixes. On Linux nothing works differently: `linux/awake` changes only its version number.
+Successful commands behave as before; the changes are in error paths, exit codes and a few edge cases.
 
 ### Fixed
 - macOS `awake all until 5pm --display` (and any flag after `until <time>`) failed with "bad time": the time now
